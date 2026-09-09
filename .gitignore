@@ -1,0 +1,25 @@
+# Environment & secrets
+.env
+.env.*
+*.pem
+*.key
+
+# AWS
+.aws-sam/
+samconfig.toml
+
+# Docker
+*.log
+
+# Node (si aplica al backend)
+node_modules/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
