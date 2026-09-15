@@ -1,0 +1,66 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Bastion host temporal (SSM Session Manager) para acceso administrativo
+  a RDS PostgreSQL, sin exponer ningun puerto de entrada. Recurso de
+  utilidad, no corresponde a un modulo especifico del roadmap SAA-C03.
+
+Parameters:
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+
+  BastionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: loan-collections-bastion-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  BastionInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: loan-collections-bastion-profile
+      Roles:
+        - !Ref BastionRole
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security Group para bastion host - sin ingress, solo SSM saliente"
+      VpcId: !ImportValue loan-collections-platform-vpc-id
+      Tags:
+        - Key: Name
+          Value: loan-collections-bastion-sg
+
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      SubnetId: !ImportValue loan-collections-platform-public-subnet-1a
+      IamInstanceProfile: !Ref BastionInstanceProfile
+      SecurityGroupIds:
+        - !GetAtt BastionSecurityGroup.GroupId
+      Tags:
+        - Key: Name
+          Value: loan-collections-bastion
+
+Outputs:
+  BastionInstanceId:
+    Value: !Ref BastionInstance
+    Export:
+      Name: loan-collections-bastion-instance-id
+
+  BastionSecurityGroupId:
+    Value: !GetAtt BastionSecurityGroup.GroupId
+    Export:
+      Name: loan-collections-bastion-sg-id

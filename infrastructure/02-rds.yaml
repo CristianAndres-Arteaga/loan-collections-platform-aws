@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Module 2 - RDS PostgreSQL (Free Tier: Single-AZ, AWS-managed encryption key,
+  manual master password) for Loan Collections Platform.
+
+Parameters:
+  DBMasterPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: "Master password for the RDS instance. Pass via --parameter-overrides, never commit it to the repo."
+  EnablePublicAccess:
+    Type: String
+    Description: "Acceso publico temporal a RDS para carga manual de DDL. Revertir a false apenas termine la tarea."
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+Resources:
+
+  # --- DB Subnet Group ---
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: loan-collections-db-subnet-group
+      DBSubnetGroupDescription: "Subnets para RDS PostgreSQL - Sistema de Prestamos y Cobranza"
+      SubnetIds:
+        - !ImportValue loan-collections-platform-db-subnet-1a
+        - !ImportValue loan-collections-platform-db-subnet-1b
+      Tags:
+        - Key: Name
+          Value: loan-collections-db-subnet-group
+
+  # --- Security Group (ingress solo desde el bastion host, via SSM) ---
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security Group para RDS PostgreSQL"
+      VpcId: !ImportValue loan-collections-platform-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !ImportValue loan-collections-bastion-sg-id
+          Description: "Acceso desde el bastion host via SSM"
+      Tags:
+        - Key: Name
+          Value: loan-collections-db-sg
+
+  # --- RDS Instance (Free Tier: db.t3.micro, Single-AZ, 20GB gp3) ---
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBInstanceIdentifier: loan-collections-db
+      Engine: postgres
+      EngineVersion: "16.15"
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      StorageType: gp3
+      MultiAZ: false
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      PubliclyAccessible: !Ref EnablePublicAccess
+      StorageEncrypted: true
+      MasterUsername: loanadmin
+      MasterUserPassword: !Ref DBMasterPassword
+      BackupRetentionPeriod: 1
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: loan-collections-db
+
+Outputs:
+  DBInstanceIdentifier:
+    Value: !Ref DBInstance
+    Export:
+      Name: loan-collections-db-identifier
+
+  DBEndpointAddress:
+    Value: !GetAtt DBInstance.Endpoint.Address
+    Export:
+      Name: loan-collections-db-endpoint
+
+  DBEndpointPort:
+    Value: !GetAtt DBInstance.Endpoint.Port
+    Export:
+      Name: loan-collections-db-port
+
+  DBSecurityGroupId:
+    Value: !Ref DBSecurityGroup
+    Export:
+      Name: loan-collections-db-sg-id
