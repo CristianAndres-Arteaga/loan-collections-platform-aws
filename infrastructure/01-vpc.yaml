@@ -1,12 +1,26 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Module 1 - Networking foundation for Loan Collections Platform.
-  VPC with public/private/db subnets across 2 AZs, IGW, 2 NAT Gateways.
+  VPC with public/private/db subnets across 2 AZs, IGW, optional NAT Gateways (cost-controlled).
 
 Parameters:
   ProjectName:
     Type: String
     Default: loan-collections-platform
+
+  CreateNatGateways:
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+    Description: >
+      Set to "true" only when a later module needs outbound internet access from
+      private subnets (e.g. EC2 pulling a Docker image from ECR). Keep "false"
+      otherwise - NAT Gateways bill per hour with no Free Tier.
+
+Conditions:
+  ShouldCreateNat: !Equals [!Ref CreateNatGateways, "true"]
 
 Resources:
 
@@ -99,15 +113,17 @@ Resources:
         - Key: Name
           Value: !Sub ${ProjectName}-db-2b
 
-  # --- NAT Gateways (1 per AZ, each needs its own Elastic IP) ---
+  # --- NAT Gateways (conditional - only created when CreateNatGateways=true) ---
   NatEIPA:
     Type: AWS::EC2::EIP
+    Condition: ShouldCreateNat
     DependsOn: IGWAttachment
     Properties:
       Domain: vpc
 
   NatGatewayA:
     Type: AWS::EC2::NatGateway
+    Condition: ShouldCreateNat
     Properties:
       AllocationId: !GetAtt NatEIPA.AllocationId
       SubnetId: !Ref PublicSubnetA
@@ -117,12 +133,14 @@ Resources:
 
   NatEIPB:
     Type: AWS::EC2::EIP
+    Condition: ShouldCreateNat
     DependsOn: IGWAttachment
     Properties:
       Domain: vpc
 
   NatGatewayB:
     Type: AWS::EC2::NatGateway
+    Condition: ShouldCreateNat
     Properties:
       AllocationId: !GetAtt NatEIPB.AllocationId
       SubnetId: !Ref PublicSubnetB
@@ -159,7 +177,7 @@ Resources:
       SubnetId: !Ref PublicSubnetB
       RouteTableId: !Ref PublicRouteTable
 
-  # --- Route Tables: Private (one per AZ, each points to its own NAT) ---
+  # --- Route Tables: Private (route to NAT only created when NAT exists) ---
   PrivateRouteTableA:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -170,6 +188,7 @@ Resources:
 
   PrivateRouteA:
     Type: AWS::EC2::Route
+    Condition: ShouldCreateNat
     Properties:
       RouteTableId: !Ref PrivateRouteTableA
       DestinationCidrBlock: 0.0.0.0/0
@@ -191,6 +210,7 @@ Resources:
 
   PrivateRouteB:
     Type: AWS::EC2::Route
+    Condition: ShouldCreateNat
     Properties:
       RouteTableId: !Ref PrivateRouteTableB
       DestinationCidrBlock: 0.0.0.0/0
