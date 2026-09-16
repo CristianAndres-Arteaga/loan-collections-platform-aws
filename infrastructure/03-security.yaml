@@ -1,0 +1,88 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Security base - IAM Role for app EC2 instances + layered Security Groups (ALB/EC2)
+
+Parameters:
+  AppPort:
+    Type: Number
+    Default: 8080
+    Description: Port the application listens on
+
+Resources:
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTPS from Internet to the ALB
+      VpcId: !ImportValue loan-collections-platform-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: loan-collections-alb-sg
+
+  Ec2AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic only from the ALB to the app instances
+      VpcId: !ImportValue loan-collections-platform-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref AppPort
+          ToPort: !Ref AppPort
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Tags:
+        - Key: Name
+          Value: loan-collections-ec2-app-sg
+
+  EC2AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: loan-collections-ec2-app-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: CloudWatchLogsWrite
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:log-group:/loan-collections/*'
+
+  EC2AppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: loan-collections-ec2-app-profile
+      Roles:
+        - !Ref EC2AppRole
+
+Outputs:
+  AlbSecurityGroupId:
+    Value: !Ref AlbSecurityGroup
+    Export:
+      Name: loan-collections-alb-sg-id
+  Ec2AppSecurityGroupId:
+    Value: !Ref Ec2AppSecurityGroup
+    Export:
+      Name: loan-collections-ec2-app-sg-id
+  EC2AppInstanceProfileName:
+    Value: !Ref EC2AppInstanceProfile
+    Export:
+      Name: loan-collections-ec2-app-instance-profile
+  EC2AppRoleArn:
+    Value: !GetAtt EC2AppRole.Arn
+    Export:
+      Name: loan-collections-ec2-app-role-arn
