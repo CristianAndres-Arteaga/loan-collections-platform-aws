@@ -1,6 +1,7 @@
 # Environment & secrets
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 
@@ -24,3 +25,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+venv/
+
+# Python
+__pycache__/
+*.pyc
