@@ -1,0 +1,111 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Module 5 - Launch Template + Auto Scaling Group for the loan-collections API.
+  MinSize/DesiredCapacity default to 0 to avoid exceeding the shared t3.micro
+  Free Tier pool (already consumed by the always-on bastion).
+
+Parameters:
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+  ImageTag:
+    Type: String
+    Default: cae670a
+    Description: ECR image tag to run - see ADR-0008 for the currently accepted image
+
+  DesiredCapacity:
+    Type: Number
+    Default: 0
+    Description: Set to 1 only for a brief deliberate test, then back to 0
+
+Resources:
+  AppLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: loan-collections-app-lt
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: t3.micro
+        IamInstanceProfile:
+          Name: !ImportValue loan-collections-ec2-app-instance-profile
+        SecurityGroupIds:
+          - !ImportValue loan-collections-ec2-app-sg-id
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: loan-collections-app
+        UserData:
+          Fn::Base64:
+            Fn::Sub:
+              - |
+                #!/bin/bash
+                set -e
+                dnf install -y docker
+                systemctl enable --now docker
+
+                DB_PASSWORD=$(aws ssm get-parameter --name "/loan-collections/db-password" --with-decryption --query "Parameter.Value" --output text --region ${AWS::Region})
+
+                aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${EcrRegistry}
+
+                docker pull ${EcrRepositoryUri}:${ImageTagParam}
+
+                docker run -d \
+                  --name loan-collections-api \
+                  --restart unless-stopped \
+                  -p 8080:8080 \
+                  -e DB_HOST="${DbEndpoint}" \
+                  -e DB_PORT="${DbPort}" \
+                  -e DB_NAME="loan_collections" \
+                  -e DB_USER="loanadmin" \
+                  -e DB_PASSWORD="$DB_PASSWORD" \
+                  ${EcrRepositoryUri}:${ImageTagParam}
+              - EcrRegistry: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+                EcrRepositoryUri: !ImportValue loan-collections-ecr-repository-uri
+                DbEndpoint: !ImportValue loan-collections-db-endpoint
+                DbPort: !ImportValue loan-collections-db-port
+                ImageTagParam: !Ref ImageTag
+
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: loan-collections-app-asg
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AppLaunchTemplate
+        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+      MinSize: "0"
+      MaxSize: "2"
+      DesiredCapacity: !Ref DesiredCapacity
+      VPCZoneIdentifier:
+        - !ImportValue loan-collections-platform-private-subnet-1a
+        - !ImportValue loan-collections-platform-private-subnet-1b
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 120
+      Tags:
+        - Key: Name
+          Value: loan-collections-app
+          PropagateAtLaunch: true
+
+  AppScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 60
+
+Outputs:
+  LaunchTemplateId:
+    Value: !Ref AppLaunchTemplate
+    Export:
+      Name: loan-collections-app-lt-id
+  AutoScalingGroupName:
+    Value: !Ref AppAutoScalingGroup
+    Export:
+      Name: loan-collections-app-asg-name

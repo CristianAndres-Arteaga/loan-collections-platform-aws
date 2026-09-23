@@ -19,8 +19,21 @@ Parameters:
       private subnets (e.g. EC2 pulling a Docker image from ECR). Keep "false"
       otherwise - NAT Gateways bill per hour with no Free Tier.
 
+  CreateEcrEndpoints:
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+    Description: >
+      Set to "true" only when a module needs private-subnet EC2 instances to
+      pull images from ECR and use SSM Session Manager without a NAT Gateway.
+      Interface endpoints bill per hour per AZ with no Free Tier - keep "false"
+      otherwise.
+
 Conditions:
   ShouldCreateNat: !Equals [!Ref CreateNatGateways, "true"]
+  ShouldCreateEcrEndpoints: !Equals [!Ref CreateEcrEndpoints, "true"]
 
 Resources:
 
@@ -147,6 +160,103 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub ${ProjectName}-nat-1b
+
+  # --- VPC Endpoints for private ECR pulls + SSM Session Manager (conditional, no NAT needed) ---
+  VpcEndpointsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: ShouldCreateEcrEndpoints
+    Properties:
+      GroupDescription: Allow HTTPS from within the VPC to interface VPC endpoints
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-vpce-sg
+
+  EcrApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateEcrEndpoints
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.api
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref VpcEndpointsSecurityGroup
+
+  EcrDkrEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateEcrEndpoints
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.dkr
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref VpcEndpointsSecurityGroup
+
+  SsmEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateEcrEndpoints
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref VpcEndpointsSecurityGroup
+
+  SsmMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateEcrEndpoints
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref VpcEndpointsSecurityGroup
+
+  Ec2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateEcrEndpoints
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref VpcEndpointsSecurityGroup
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateEcrEndpoints
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTableA
+        - !Ref PrivateRouteTableB
 
   # --- Route Table: Public (shared by both public subnets) ---
   PublicRouteTable:
