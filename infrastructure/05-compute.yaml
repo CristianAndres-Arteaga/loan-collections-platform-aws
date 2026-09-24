@@ -83,8 +83,10 @@ Resources:
       VPCZoneIdentifier:
         - !ImportValue loan-collections-platform-private-subnet-1a
         - !ImportValue loan-collections-platform-private-subnet-1b
-      HealthCheckType: EC2
-      HealthCheckGracePeriod: 120
+      TargetGroupARNs:
+        - !ImportValue loan-collections-alb-target-group-arn
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
       Tags:
         - Key: Name
           Value: loan-collections-app
