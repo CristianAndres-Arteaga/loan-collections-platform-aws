@@ -11,8 +11,8 @@ Parameters:
 
   ImageTag:
     Type: String
-    Default: cae670a
-    Description: ECR image tag to run - see ADR-0008 for the currently accepted image
+    Default: beb415f
+    Description: ECR image tag to run - see ADR-0012 for the currently accepted image
 
   DesiredCapacity:
     Type: Number
