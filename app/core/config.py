@@ -10,6 +10,12 @@ class Settings(BaseSettings):
     db_user: str
     db_password: str
 
+    # Cache (ADR-0011). "disabled" = la app funciona solo contra PostgreSQL.
+    cache_host: str = "disabled"
+    cache_port: int = 6379
+    cache_tls: bool = True
+    cache_ttl_seconds: int = 300
+
     @property
     def database_url(self) -> str:
         return (
