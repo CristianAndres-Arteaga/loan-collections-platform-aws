@@ -1,8 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Module 5 - Launch Template + Auto Scaling Group for the loan-collections API.
-  MinSize/DesiredCapacity default to 0 to avoid exceeding the shared t3.micro
-  Free Tier pool (already consumed by the always-on bastion).
+  MinSize/DesiredCapacity default to 0: every instance-hour draws from the
+  Free plan credits (see ADR-0010), so capacity is only raised for brief tests.
 
 Parameters:
   LatestAmiId:
@@ -11,8 +11,8 @@ Parameters:
 
   ImageTag:
     Type: String
-    Default: cae670a
-    Description: ECR image tag to run - see ADR-0008 for the currently accepted image
+    Default: beb415f
+    Description: ECR image tag to run - see ADR-0012 for the currently accepted image
 
   DesiredCapacity:
     Type: Number
@@ -49,6 +49,7 @@ Resources:
                 systemctl enable --now docker
 
                 DB_PASSWORD=$(aws ssm get-parameter --name "/loan-collections/db-password" --with-decryption --query "Parameter.Value" --output text --region ${AWS::Region})
+                CACHE_HOST=$(aws ssm get-parameter --name "/loan-collections/cache-endpoint" --query "Parameter.Value" --output text --region ${AWS::Region})
 
                 aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${EcrRegistry}
 
@@ -63,6 +64,7 @@ Resources:
                   -e DB_NAME="loan_collections" \
                   -e DB_USER="loanadmin" \
                   -e DB_PASSWORD="$DB_PASSWORD" \
+                  -e CACHE_HOST="$CACHE_HOST" \
                   ${EcrRepositoryUri}:${ImageTagParam}
               - EcrRegistry: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
                 EcrRepositoryUri: !ImportValue loan-collections-ecr-repository-uri

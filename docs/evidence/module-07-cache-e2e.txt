@@ -1,0 +1,70 @@
+# Modulo 7 - prueba end-to-end cache-aside - Fri Sep 25 00:48:32 UTC 2026
+# Imagen beb415f, Valkey 9.1 cache.t4g.micro (TLS), via ALB
+
+## 1) Health
+HTTP/1.1 200 OK
+Date: Fri, 25 Sep 2026 00:48:33 GMT
+Content-Type: application/json
+Content-Length: 15
+Connection: keep-alive
+server: uvicorn
+
+{"status":"ok"}
+
+## 2) Primer GET overdue -> esperado MISS
+HTTP/1.1 200 OK
+Date: Fri, 25 Sep 2026 00:48:33 GMT
+Content-Type: application/json
+Content-Length: 2
+Connection: keep-alive
+server: uvicorn
+x-cache: MISS
+
+[]
+[tiempo: 0.466889s]
+
+## 3) Segundo GET overdue -> esperado HIT
+HTTP/1.1 200 OK
+Date: Fri, 25 Sep 2026 00:48:33 GMT
+Content-Type: application/json
+Content-Length: 2
+Connection: keep-alive
+server: uvicorn
+x-cache: HIT
+
+[]
+[tiempo: 0.412924s]
+
+## 4) POST pago de 1.00 a la cuota 1 -> invalida la cache
+HTTP/1.1 201 Created
+Date: Fri, 25 Sep 2026 00:48:34 GMT
+Content-Type: application/json
+Content-Length: 172
+Connection: keep-alive
+server: uvicorn
+
+{"payment_id":3,"installment_id":1,"amount_paid":"1.00","payment_date":"2026-09-25T00:48:34.383590Z","payment_method":"e2e-test","created_at":"2026-09-25T00:48:34.383590Z"}
+
+## 5) GET overdue despues del pago -> esperado MISS
+HTTP/1.1 200 OK
+Date: Fri, 25 Sep 2026 00:48:34 GMT
+Content-Type: application/json
+Content-Length: 2
+Connection: keep-alive
+server: uvicorn
+x-cache: MISS
+
+[]
+[tiempo: 0.416383s]
+
+## 6) GET overdue otra vez -> esperado HIT
+HTTP/1.1 200 OK
+Date: Fri, 25 Sep 2026 00:48:35 GMT
+Content-Type: application/json
+Content-Length: 2
+Connection: keep-alive
+server: uvicorn
+x-cache: HIT
+
+[]
+[tiempo: 0.414637s]
