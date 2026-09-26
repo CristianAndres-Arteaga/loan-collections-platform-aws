@@ -133,6 +133,89 @@ Justificación de cada punto:
   empiezan a figurar como vencidas a las 19:00 del día anterior en hora
   local. Es un error de negocio preexistente que la clave por fecha hizo
   visible. Se registra como deuda y no se resuelve en este módulo.
-- **Pendiente para el paso de infraestructura (Paso 7.3):** ubicación en
-  subredes privadas, Security Group con entrada 6379 solo desde el SG de las
-  EC2, y cifrado en tránsito y en reposo. Se documentarán al implementarlos.
+- La infraestructura concreta (red, seguridad, descubrimiento del endpoint)
+  y las lecciones de la implementación se documentan en la adenda siguiente.
+
+## Adenda: infraestructura e implementación (2026-09-25)
+
+Implementado en `infrastructure/07-cache.yaml` (stack
+`loan-collections-cache`), con cambios en `03-security.yaml` (IAM) y
+`05-compute.yaml` (user-data). Validado end-to-end en AWS; la evidencia está
+en `docs/evidence/module-07-cache-e2e.txt`.
+
+### Red y seguridad
+| Aspecto | Implementación | Motivo |
+|---|---|---|
+| Subredes | Subnet group en las **subredes de datos** 1a/1b (las mismas de RDS) | No tienen ruta a internet en su tabla de rutas. Una caché no necesita salir a internet ni ser alcanzable desde él. |
+| Security Group | Entrada TCP 6379 **solo desde el SG de las EC2 de la app** (referencia a SG, no CIDR) | Si cambian las IPs de las instancias o el ASG escala, la regla sigue siendo correcta. Nada más en la VPC puede hablar con la caché. |
+| Cifrado en reposo | `AtRestEncryptionEnabled: true` (clave administrada por AWS) | Sin costo adicional. |
+| Cifrado en tránsito | `TransitEncryptionEnabled: true`; el cliente usa `ssl=True` (`CACHE_TLS`, por defecto `true`) | El tráfico entre la app y la caché va cifrado aunque esté dentro de la VPC. Con TLS activo, un cliente sin TLS no conecta. |
+| Motor | Valkey 9.1, 1 nodo, sin failover automático ni Multi-AZ | Ver sección 1 de la Decisión. |
+| Snapshots | `SnapshotRetentionLimit: 0` | La caché es descartable: PostgreSQL es la fuente de verdad. Respaldarla solo agrega costo de almacenamiento. |
+
+### Descubrimiento del endpoint
+- El endpoint se publica en el parámetro SSM
+  **`/loan-collections/cache-endpoint`** (tipo `String`, no es un secreto).
+  Con `CreateCache=true` vale la dirección del primario; con `false` vale
+  `disabled`.
+- **El parámetro es incondicional a propósito.** El user-data corre con
+  `set -e` y lee el parámetro al arrancar: si no existiera, la instancia
+  fallaría en el arranque y el ASG entraría en un ciclo de reemplazos. El
+  comentario en la plantilla lo advierte para que nadie le agregue una
+  `Condition`.
+- Con `CACHE_HOST=disabled` la app no crea el cliente: cero conexiones y
+  cero timeouts, directo a PostgreSQL.
+- El rol de las EC2 recibe `ssm:GetParameter` solo sobre los ARN exactos de
+  `db-password` y `cache-endpoint` (política `SsmParameterReadAppConfig`),
+  sin comodines.
+- El endpoint **no se exporta** con `Export`. Si `05-compute` importara un
+  export de `07-cache`, CloudFormation bloquearía apagar la caché mientras el
+  export esté en uso (el mismo candado que se vio con el target group en el
+  ADR-0010). SSM desacopla ambos stacks.
+- **Consecuencia operativa:** la instancia lee el endpoint **una sola vez,
+  al arrancar**. Por eso el orden de encendido es
+  endpoints de ECR → caché → ALB → ASG, y se apaga en orden inverso. Si se
+  enciende la caché con instancias ya corriendo, estas siguen con `disabled`
+  hasta ser reemplazadas. Si se apaga con instancias corriendo, estas fallan
+  abierto hacia PostgreSQL.
+
+### Lecciones de la implementación
+- **Reintentos por defecto de `redis-py` 8.1.0.** Con la caché caída, el
+  cliente reintenta 10 veces con backoff exponencial con jitter (~2.7 s por
+  operación). La prueba local de "fallar abierto" tardó **9.8 s** por
+  petición: funcionaba, pero para el usuario la app estaba caída. Se
+  corrigió con `retry=Retry(NoBackoff(), 0)`. Medición en caliente con la
+  caché caída: 0.415 s, frente a 0.407 s sin caché. Lección: un timeout
+  corto no alcanza si la librería reintenta por su cuenta; hay que medir la
+  ruta de fallo, no solo configurarla.
+- **Error transitorio de ElastiCache.** El primer intento de crear la caché
+  falló con `GeneralServiceException` (HTTP 408) y el stack quedó en
+  `UPDATE_ROLLBACK_COMPLETE`. El reintento sin cambios funcionó. Con el
+  patrón de interruptor, reintentar es un `deploy` más; siempre hay que leer
+  los eventos del stack antes de cambiar la plantilla.
+- **`cloudformation deploy` conserva los valores anteriores de los
+  parámetros.** Cambiar el `Default` de `ImageTag` en la plantilla no cambia
+  un stack existente (respondió *No changes to deploy*): el `Default` solo
+  aplica al crear. Los valores (`ImageTag` y los interruptores) se pasan
+  siempre con `--parameter-overrides` y se verifica el estado real después
+  del deploy.
+
+### Resultado de la prueba end-to-end (2026-09-25)
+6/6 pasos correctos vía ALB: health 200 → `MISS` → `HIT` → `POST` de pago
+201 → `MISS` (invalidación) → `HIT`. Limitaciones de la prueba:
+- La lista de vencidas estaba vacía (`[]`): prueba el **mecanismo**
+  (llenado, lectura e invalidación), no la mejora de rendimiento.
+- Los tiempos (MISS 0.467 s, HIT 0.413 s) están dominados por la latencia
+  de la red entre el cliente y Ohio, no por la consulta.
+- La deuda de zona horaria se vio en vivo: la clave del contenedor era del
+  día 25 mientras en hora local todavía era el 24.
+
+### Deuda técnica registrada
+- **Sin autenticación en Valkey** (ni `AuthToken` ni usuarios RBAC). Hoy la
+  mitiga el Security Group, que solo admite a las EC2 de la app. Para
+  producción, usar RBAC de ElastiCache con un usuario de permisos mínimos.
+- **Un solo nodo:** ver Consecuencias.
+- **Logging sin configurar:** los warnings de la caché salen sin nivel ni
+  marca de tiempo (handler de último recurso de `logging`). Se resuelve en
+  el módulo de observabilidad.
+- **Zona horaria UTC en `date.today()`:** ver Consecuencias.
