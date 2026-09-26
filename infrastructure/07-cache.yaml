@@ -57,16 +57,18 @@ Resources:
       AtRestEncryptionEnabled: true
       TransitEncryptionEnabled: true
       SnapshotRetentionLimit: 0
+  # SIN Condition a proposito: el user-data (set -e) lee este parametro al arrancar;
+  # si no existiera, la instancia falla. Con CreateCache=false vale "disabled" (ADR-0011).
   CacheEndpointParameter:
-      Type: AWS::SSM::Parameter
-      Properties:
-        Name: /loan-collections/cache-endpoint
-        Type: String
-        Description: Endpoint de Valkey o 'disabled' si CreateCache=false (ADR-0011)
-        Value: !If
-          - CacheEnabled
-          - !GetAtt CacheReplicationGroup.PrimaryEndPoint.Address
-          - disabled  
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /loan-collections/cache-endpoint
+      Type: String
+      Description: Endpoint de Valkey o 'disabled' si CreateCache=false (ADR-0011)
+      Value: !If
+        - CacheEnabled
+        - !GetAtt CacheReplicationGroup.PrimaryEndPoint.Address
+        - disabled
 
 Outputs:
   CacheEndpointAddress:
