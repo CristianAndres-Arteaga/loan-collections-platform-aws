@@ -61,14 +61,16 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: 'arn:aws:logs:*:*:log-group:/loan-collections/*'
-        - PolicyName: SsmParameterReadDbPassword
+        - PolicyName: SsmParameterReadAppConfig
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
                   - ssm:GetParameter
-                Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/loan-collections/db-password
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/loan-collections/db-password
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/loan-collections/cache-endpoint
 
   EC2AppInstanceProfile:
     Type: AWS::IAM::InstanceProfile

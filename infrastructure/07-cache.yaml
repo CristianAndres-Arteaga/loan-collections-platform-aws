@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Module 7 - ElastiCache Valkey single-node, cache-aside (ver ADR-0011)
+
+Parameters:
+  CreateCache:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Interruptor de costo. Encender solo para pruebas.
+
+Conditions:
+  CacheEnabled: !Equals [!Ref CreateCache, 'true']
+
+Resources:
+  CacheSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Condition: CacheEnabled
+    Properties:
+      CacheSubnetGroupName: loan-collections-cache-subnet-group
+      Description: Subnets de datos (sin ruta a internet) para ElastiCache
+      SubnetIds:
+        - !ImportValue loan-collections-platform-db-subnet-1a
+        - !ImportValue loan-collections-platform-db-subnet-1b
+
+  CacheSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CacheEnabled
+    Properties:
+      GroupDescription: Allow Valkey 6379 only from the app instances
+      VpcId: !ImportValue loan-collections-platform-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !ImportValue loan-collections-ec2-app-sg-id
+          Description: Valkey solo desde las instancias EC2 de la app
+      Tags:
+        - Key: Name
+          Value: loan-collections-cache-sg
+
+  CacheReplicationGroup:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Condition: CacheEnabled
+    Properties:
+      ReplicationGroupId: loan-collections-cache
+      ReplicationGroupDescription: Valkey cache-aside para cuotas vencidas
+      Engine: valkey
+      EngineVersion: '9.1'
+      CacheNodeType: cache.t4g.micro
+      NumCacheClusters: 1
+      AutomaticFailoverEnabled: false
+      MultiAZEnabled: false
+      Port: 6379
+      CacheSubnetGroupName: !Ref CacheSubnetGroup
+      SecurityGroupIds:
+        - !Ref CacheSecurityGroup
+      AtRestEncryptionEnabled: true
+      TransitEncryptionEnabled: true
+      SnapshotRetentionLimit: 0
+  # SIN Condition a proposito: el user-data (set -e) lee este parametro al arrancar;
+  # si no existiera, la instancia falla. Con CreateCache=false vale "disabled" (ADR-0011).
+  CacheEndpointParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /loan-collections/cache-endpoint
+      Type: String
+      Description: Endpoint de Valkey o 'disabled' si CreateCache=false (ADR-0011)
+      Value: !If
+        - CacheEnabled
+        - !GetAtt CacheReplicationGroup.PrimaryEndPoint.Address
+        - disabled
+
+Outputs:
+  CacheEndpointAddress:
+    Condition: CacheEnabled
+    Description: Endpoint primario (TLS) para la app
+    Value: !GetAtt CacheReplicationGroup.PrimaryEndPoint.Address
