@@ -3,6 +3,7 @@ Description: >
   Module 5 - Launch Template + Auto Scaling Group for the loan-collections API.
   MinSize/DesiredCapacity default to 0: every instance-hour draws from the
   Free plan credits (see ADR-0010), so capacity is only raised for brief tests.
+  Module 9 - container logs shipped to CloudWatch Logs with bounded retention.
 
 Parameters:
   LatestAmiId:
@@ -11,15 +12,33 @@ Parameters:
 
   ImageTag:
     Type: String
-    Default: beb415f
-    Description: ECR image tag to run - see ADR-0012 for the currently accepted image
+    Default: 1de2957
+    Description: ECR image tag to run - residual HIGH findings accepted in ADR-0008 and ADR-0012
 
   DesiredCapacity:
     Type: Number
     Default: 0
     Description: Set to 1 only for a brief deliberate test, then back to 0
 
+  BusinessTimezone:
+    Type: String
+    Default: America/La_Paz
+    Description: IANA timezone used to decide which installments are overdue (Bolivia, UTC-4, no DST)
+
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    AllowedValues: [1, 3, 5, 7, 14, 30]
+    Description: CloudWatch Logs retention - bounded on purpose, logs are not an archive
+
 Resources:
+  # Creado aqui y no por Docker: un log group autocreado queda con retencion infinita.
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /loan-collections/app
+      RetentionInDays: !Ref LogRetentionDays
+
   AppLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
@@ -51,6 +70,10 @@ Resources:
                 DB_PASSWORD=$(aws ssm get-parameter --name "/loan-collections/db-password" --with-decryption --query "Parameter.Value" --output text --region ${AWS::Region})
                 CACHE_HOST=$(aws ssm get-parameter --name "/loan-collections/cache-endpoint" --query "Parameter.Value" --output text --region ${AWS::Region})
 
+                # IMDSv2 (HttpTokens: required): primero un token, despues el metadato
+                IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+                INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+
                 aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${EcrRegistry}
 
                 docker pull ${EcrRepositoryUri}:${ImageTagParam}
@@ -59,12 +82,19 @@ Resources:
                   --name loan-collections-api \
                   --restart unless-stopped \
                   -p 8080:8080 \
+                  --log-driver awslogs \
+                  --log-opt awslogs-region=${AWS::Region} \
+                  --log-opt awslogs-group=${AppLogGroup} \
+                  --log-opt awslogs-stream="$INSTANCE_ID" \
+                  --log-opt mode=non-blocking \
+                  --log-opt max-buffer-size=4m \
                   -e DB_HOST="${DbEndpoint}" \
                   -e DB_PORT="${DbPort}" \
                   -e DB_NAME="loan_collections" \
                   -e DB_USER="loanadmin" \
                   -e DB_PASSWORD="$DB_PASSWORD" \
                   -e CACHE_HOST="$CACHE_HOST" \
+                  -e BUSINESS_TIMEZONE="${BusinessTimezone}" \
                   ${EcrRepositoryUri}:${ImageTagParam}
               - EcrRegistry: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
                 EcrRepositoryUri: !ImportValue loan-collections-ecr-repository-uri
@@ -79,7 +109,9 @@ Resources:
       LaunchTemplate:
         LaunchTemplateId: !Ref AppLaunchTemplate
         Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
-      MinSize: "0"
+      # MinSize = DesiredCapacity: encendido (1) el target tracking nunca baja a 0;
+      # apagado sigue siendo 0/0 (ver ADR-0014).
+      MinSize: !Ref DesiredCapacity
       MaxSize: "2"
       DesiredCapacity: !Ref DesiredCapacity
       VPCZoneIdentifier:
@@ -113,3 +145,6 @@ Outputs:
     Value: !Ref AppAutoScalingGroup
     Export:
       Name: loan-collections-app-asg-name
+  AppLogGroupName:
+    Description: Log group de la app, para consultas con Logs Insights
+    Value: !Ref AppLogGroup

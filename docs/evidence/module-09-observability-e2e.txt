@@ -1,0 +1,93 @@
+# Modulo 9 - observabilidad end-to-end - 2026-09-27 ~21:50-23:15 UTC
+# Imagen 1de2957, BusinessTimezone America/La_Paz, logs via awslogs -> /loan-collections/app
+# Transcrito de la salida de terminal de la sesion. Se omiten la IP del desarrollador,
+# el email de alertas, el ID de cuenta y los ARNs.
+
+## A) Filtro de logs -> metrica -> alarma -> email (prueba sintetica, sin instancias)
+aws logs test-metric-filter con 4 lineas de ejemplo:
+  match: {"level":"ERROR",...}  {"level":"CRITICAL",...}
+  sin match: INFO, WARNING   (las caidas de Valkey son WARNING: no generan email)
+
+Intento 1: put-log-events -> rejectedLogEventsInfo {"tooNewLogEventStartIndex": 0}
+  Causa: `date +%s%3N` en este Ubuntu ignora el ancho e imprime 19 digitos
+  (nanosegundos). Reloj WSL verificado contra el header Date de AWS: 1 s de diferencia.
+  Correccion: TS=$(date +%s)000  -> 13 digitos.
+Intento 2: rejectedLogEventsInfo null
+  22:00:39 OK ... 22:02:01 ALARM   (~80 s)  -> email "ALARM: loan-collections-app-errors" recibido
+
+## B) Suscripcion de email borrada sin intervencion del usuario
+21:52:51 UTC  llega el email "OK: loan-collections-app-errors" (INSUFFICIENT_DATA -> OK)
+21:53:40 UTC  list-subscriptions-by-topic -> "Deleted"
+Se recreo (ID logico AlertsEmailSubscriptionV2); confirmada con clic normal -> otra vez "Deleted".
+Confirmada con: aws sns confirm-subscription --authenticate-on-unsubscribe true
+  get-subscription-attributes -> PendingConfirmation=false  ConfirmationWasAuthenticated=true
+Prueba sintetica 2: 22:14:04 ALARM, email recibido; despues de 3 min la suscripcion sigue viva.
+
+## C) Encendido y logs reales
+Successfully created/updated stack - loan-collections-vpc     (CreateEcrEndpoints=true, incluye endpoint logs)
+Successfully created/updated stack - loan-collections-alb     (CreateAlb=true)
+Successfully created/updated stack - loan-collections-compute (DesiredCapacity=1)
+ASG on at 22:27:17 UTC
+healthy at 22:28:53 UTC   (96 s)
+health=200   overdue=200   (via CloudFront)
+
+aws logs tail /loan-collections/app --log-stream-name-prefix i- (extracto):
+{"timestamp": "2026-09-27T22:28:31.030+00:00", "level": "INFO", "logger": "uvicorn.access", "message": "10.0.0.41:32890 - \"GET /health HTTP/1.1\" 200"}
+{"timestamp": "2026-09-27T22:28:31.179+00:00", "level": "INFO", "logger": "uvicorn.access", "message": "10.0.1.78:7902 - \"GET /health HTTP/1.1\" 200"}
+{"timestamp": "2026-09-27T22:28:54.937+00:00", "level": "INFO", "logger": "uvicorn.access", "message": "10.0.0.41:55314 - \"GET /installments/?overdue=true HTTP/1.1\" 200"}
+-> health checks desde dos IPs (un nodo del ALB por AZ: 10.0.0.x = 2a, 10.0.1.x = 2b).
+
+Logs Insights (ultimos 30 min):
+  filter logger = "app.main"
+    app iniciada: cache=disabled, business_timezone=America/La_Paz
+  filter logger = "uvicorn.access" | parse message ... | stats count(*) by path, status
+    /health  200  requests=21
+    /installments/?overdue=true  200  requests=1
+
+Alarmas: alb-target-5xx OK, alb-unhealthy-hosts OK, app-errors OK, rds-cpu-high OK
+
+## D) Falla inyectada: app detenida con reemplazo suspendido
+aws autoscaling suspend-processes --scaling-processes ReplaceUnhealthy
+aws ssm send-command AWS-RunShellScript "docker stop loan-collections-api" -> Success
+app detenida at 22:31:32 UTC
+22:31:35 target=healthy   cdn=502 alarm=OK      <- ventana ciega: usuarios con 502 antes de detectarlo
+22:32:09 target=unhealthy cdn=502 alarm=OK
+...
+22:39:27 target=unhealthy cdn=502 alarm=ALARM   -> email "ALARM: loan-collections-alb-unhealthy-hosts" recibido
+Tiempo de deteccion (MTTD) medido: ~8 min (3 checks x 15 s + 5 periodos de 60 s + demora de publicacion).
+El 502 lo genera el ALB (fail-open, puerto cerrado): cuenta en HTTPCode_ELB_5XX_Count,
+no en HTTPCode_Target_5XX_Count -> la alarma target-5xx no lo habria detectado.
+
+## E) Auto-reparacion y el fallo encontrado
+resume at 22:40:51 UTC
+22:40:58  terminate i-07eb...  "taken out of service in response to an ELB system health check failure"
+22:40:59  launch    i-036e...  "launched in response to an unhealthy instance needing to be replaced"
+22:41:53  "a monitor alarm TargetTracking-...-AlarmLow in state ALARM triggered policy
+           ...AppScalingPolicy changing the desired capacity from 1 to 0"
+22:42:03  terminate i-036e... (sana)
+22:49:31  alarm unhealthy-hosts = OK   con   cdn final=503   <- OK FALSO: cero instancias = cero unhealthy
+Causa: target tracking por CPU (60%) + MinSize 0. Con la API sin carga, AlarmLow
+se dispara a los ~15 min y la politica baja la capacidad hasta MinSize.
+
+## F) Correccion aplicada y verificada con los recursos encendidos
+05-compute: MinSize: !Ref DesiredCapacity
+06-alb:     + loan-collections-alb-no-healthy-hosts (HealthyHostCount < 1, TreatMissingData breaching)
+            + loan-collections-alb-elb-5xx (HTTPCode_ELB_5XX_Count > 5 en 5 min)
+MinSize/Desired/Max: 1 1 2
+healthy at 22:55:17 UTC   cdn=200
+no-healthy-hosts: ALARM (cierto: servicio caido 22:42-22:55) ... 22:58:53 OK
+
+## G) Apagado y verificacion
+Successfully created/updated stack - loan-collections-compute (DesiredCapacity=0)
+Successfully created/updated stack - loan-collections-alb     (CreateAlb=false, AllowedClientCidr=127.0.0.1/32)
+Successfully created/updated stack - loan-collections-vpc     (CreateEcrEndpoints=false)
+log stream synthetic-test borrado
+0  0  0      (MinSize, Desired, instancias)
+ALBs: 0   Endpoints: 0   Distribuciones: null
+Alarmas restantes: app-errors OK, rds-cpu-high OK  (las 4 del ALB se borraron con el ALB)
+
+## No probado
+- Alarma alb-target-5xx: no se genero ningun 5xx respondido por la app.
+- Alarma rds-cpu-high: no se genero carga en RDS.
+- Alarmas nuevas (no-healthy-hosts, elb-5xx) frente a una segunda falla inyectada:
+  no-healthy-hosts se vio pasar ALARM -> OK con la instancia nueva; elb-5xx solo se vio en OK.

@@ -1,4 +1,6 @@
-from datetime import date
+import logging
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import TypeAdapter
@@ -13,9 +15,17 @@ from app.models.payment import Payment
 from app.schemas.installment import InstallmentRead
 from app.schemas.payment import PaymentCreate, PaymentRead
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/installments", tags=["installments"])
 
 _installment_list = TypeAdapter(list[InstallmentRead])
+_business_tz = ZoneInfo(settings.business_timezone)
+
+
+def _hoy() -> date:
+    # "Vencida" se decide con el calendario del negocio, no con el reloj UTC del contenedor
+    return datetime.now(_business_tz).date()
 
 
 def _overdue_cache_key(day: date) -> str:
@@ -28,7 +38,7 @@ def listar_cuotas(response: Response, overdue: bool = False, db: Session = Depen
     if not overdue:
         return db.scalars(select(Installment)).all()
 
-    hoy = date.today()  # una sola vez: la misma fecha para la clave y para la consulta
+    hoy = _hoy()  # una sola vez: la misma fecha para la clave y para la consulta
     key = _overdue_cache_key(hoy)
 
     cached = cache_get(key)
@@ -71,6 +81,10 @@ def registrar_pago(installment_id: int, payload: PaymentCreate, db: Session = De
 
     db.commit()
     # Despues del commit: si el commit falla, no hay cambio que invalidar (ADR-0011)
-    cache_delete(_overdue_cache_key(date.today()))
+    cache_delete(_overdue_cache_key(_hoy()))
     db.refresh(payment)
+    logger.info(
+        "pago registrado: payment_id=%s installment_id=%s status=%s",
+        payment.id, installment_id, installment.status,
+    )
     return payment
