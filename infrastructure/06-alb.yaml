@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Module 6 - Application Load Balancer (HTTP:80 temporal, ver ADR-0010)
+Description: Modules 6/8 - Application Load Balancer detras de CloudFront (ver ADR-0010, ADR-0013)
 
 Parameters:
   CreateAlb:
@@ -14,6 +14,11 @@ Parameters:
     AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/32$'
     ConstraintDescription: Debe ser una unica IP en formato x.x.x.x/32
     Description: IP publica del desarrollador. Se pasa en el deploy, nunca se commitea.
+
+  CloudFrontOriginPrefixListId:
+    Type: String
+    Default: pl-b6a144df
+    Description: Managed prefix list com.amazonaws.global.cloudfront.origin-facing (el ID cambia por region; este es us-east-2)
 
   AppPort:
     Type: Number
@@ -51,6 +56,8 @@ Resources:
         - Key: deregistration_delay.timeout_seconds
           Value: '30'
 
+  # Solo CloudFront llega al ALB. Una prefix list pesa su MaxEntries (55)
+  # contra la cuota de 60 reglas inbound del SG.
   AlbHttpIngress:
     Type: AWS::EC2::SecurityGroupIngress
     Condition: AlbEnabled
@@ -59,8 +66,8 @@ Resources:
       IpProtocol: tcp
       FromPort: 80
       ToPort: 80
-      CidrIp: !Ref AllowedClientCidr
-      Description: HTTP temporal solo desde IP del desarrollador (ADR-0010)
+      SourcePrefixListId: !Ref CloudFrontOriginPrefixListId
+      Description: HTTP solo desde CloudFront origin-facing (ADR-0013)
 
   ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
