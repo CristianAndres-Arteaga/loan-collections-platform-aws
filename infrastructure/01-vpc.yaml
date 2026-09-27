@@ -247,6 +247,21 @@ Resources:
       SecurityGroupIds:
         - !Ref VpcEndpointsSecurityGroup
 
+  # Modulo 9: el driver awslogs de Docker necesita llegar a CloudWatch Logs sin NAT.
+  LogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateEcrEndpoints
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref VpcEndpointsSecurityGroup
+
   S3GatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Condition: ShouldCreateEcrEndpoints
