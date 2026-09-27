@@ -1,0 +1,67 @@
+# Modulo 8 - prueba end-to-end CloudFront -> ALB -> EC2 - 2026-09-27 ~20:40-20:50 UTC
+# Imagen beb415f (ASG DesiredCapacity=1), sin cache (CreateCache=false)
+# Transcrito de la salida de terminal de la sesion. Se omiten la IP del
+# desarrollador, el DNS del ALB y el valor de X-Origin-Verify.
+# La distribucion d2fxjkf2gg6f9n.cloudfront.net fue eliminada al terminar.
+
+## 0) Encendido
+Successfully created/updated stack - loan-collections-vpc   (CreateEcrEndpoints=true)
+Successfully created/updated stack - loan-collections-alb   (CreateAlb=true, AllowedClientCidr=<IP>/32, OriginVerifySecret=<NoEcho>)
+UPDATE_COMPLETE https://d2fxjkf2gg6f9n.cloudfront.net
+-> CloudFront se puede crear en una cuenta del Free plan.
+
+## T1) CloudFront /health SIN instancias -> esperado 503 del ALB (Target Group vacio)
+HTTP/2 503
+server: awselb/2.0
+x-cache: Error from cloudfront
+via: 1.1 19730f0d78f5675aa7f2838252596968.cloudfront.net (CloudFront)
+-> La IP paso la CloudFront Function, el header secreto coincidio con la regla
+   del listener (sin el seria 403 fixed-response) y el forward llego a un TG vacio.
+
+## T2) ALB directo por HTTP -> esperado timeout (SG solo admite la prefix list de CloudFront)
+code=000
+curl_exit=28
+
+## T3) http:// en CloudFront -> esperado redirect a https
+HTTP/1.1 301 Moved Permanently
+Location: https://d2fxjkf2gg6f9n.cloudfront.net/health
+
+## Encendido del ASG
+Successfully created/updated stack - loan-collections-compute   (DesiredCapacity=1)
+ASG on at 20:44:38 UTC
+healthy at 20:46:13 UTC   (aws elbv2 wait target-in-service)
+
+## T4) CloudFront /health con instancia sana -> esperado 200
+HTTP/2 200
+server: uvicorn
+x-cache: Miss from cloudfront
+{"status":"ok"}
+-> "Miss" es lo correcto: Managed-CachingDisabled, ninguna respuesta de la API se cachea en el borde.
+
+## T5) CloudFront /installments/?overdue=true -> esperado 200
+code=200 time=0.681030s
+
+## T6) Cliente envia su propio X-Origin-Verify falso -> esperado 200
+code=200
+-> CloudFront reemplaza el header del cliente por el valor configurado en el origen;
+   el cliente no puede ni sobrescribirlo ni necesita conocerlo.
+
+## T7) CloudFront Function con otra IP (aws cloudfront test-function, viewer.ip=203.0.113.10)
+{"response":{"statusCode":403,"statusDescription":"Forbidden","headers":{},"cookies":{}}}
+
+## Apagado (orden inverso) y verificacion
+Successfully created/updated stack - loan-collections-compute   (DesiredCapacity=0)
+Successfully created/updated stack - loan-collections-alb       (CreateAlb=false, AllowedClientCidr=127.0.0.1/32)
+Successfully created/updated stack - loan-collections-vpc       (CreateEcrEndpoints=false)
+loan-collections-app-asg        0       0
+ALBs: 0
+Endpoints: 0
+Distribuciones: null
+Functions: 0
+
+## No probado
+- Que otra distribucion CloudFront (de otra cuenta, sin el secreto) reciba 403 del
+  listener: requeriria crear una segunda distribucion. Queda cubierto indirectamente
+  por T1 (la regla distingue por header) y por el default fixed-response 403.
+- Filtro de IP desde una IP real distinta: se probo con test-function (T7), no con
+  trafico real.
