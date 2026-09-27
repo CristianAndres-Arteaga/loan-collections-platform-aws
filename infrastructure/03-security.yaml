@@ -8,16 +8,14 @@ Parameters:
     Description: Port the application listens on
 
 Resources:
+  # Sin reglas inline: el ingress 80 lo agrega 06-alb.yaml (solo desde CloudFront).
+  # GroupDescription queda desactualizada a proposito: es inmutable y cambiarla
+  # reemplazaria el SG (nuevo ID, export en uso). Ver ADR-0013.
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Allow HTTPS from Internet to the ALB
       VpcId: !ImportValue loan-collections-platform-vpc-id
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
           Value: loan-collections-alb-sg
