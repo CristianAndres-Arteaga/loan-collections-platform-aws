@@ -183,6 +183,54 @@ Resources:
         ViewerCertificate:
           CloudFrontDefaultCertificate: true
 
+  # Alarmas del ALB: viven aqui para nacer y morir con el ALB (el nombre completo
+  # del ALB lleva un sufijo aleatorio que cambia al recrearlo; ver ADR-0014).
+  UnhealthyHostsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AlbEnabled
+    Properties:
+      AlarmName: loan-collections-alb-unhealthy-hosts
+      AlarmDescription: Al menos un target unhealthy durante 5 minutos seguidos (alineado a HealthCheckGracePeriod 300)
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+        - Name: TargetGroup
+          Value: !GetAtt AppTargetGroup.TargetGroupFullName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue loan-collections-alerts-topic-arn
+      OKActions:
+        - !ImportValue loan-collections-alerts-topic-arn
+
+  Target5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AlbEnabled
+    Properties:
+      AlarmName: loan-collections-alb-target-5xx
+      AlarmDescription: La app respondio mas de 5 errores 5xx en 5 minutos
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue loan-collections-alerts-topic-arn
+      OKActions:
+        - !ImportValue loan-collections-alerts-topic-arn
+
 Outputs:
   TargetGroupArn:
     Description: ARN del Target Group, lo importa 05-compute.yaml
