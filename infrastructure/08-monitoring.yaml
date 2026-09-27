@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Module 9 - Alertas por email (SNS) + alarmas de RDS y de errores en logs (ver ADR-0014)
+
+Parameters:
+  AlertEmail:
+    Type: String
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+    ConstraintDescription: Debe ser un email valido
+    Description: Email que recibe las alarmas. Se pasa en el deploy, nunca se commitea.
+
+  AppLogGroupName:
+    Type: String
+    Default: /loan-collections/app
+    Description: Log group creado por 05-compute.yaml
+
+Resources:
+  # Sin cifrar a proposito: con la clave administrada aws/sns, CloudWatch no puede
+  # publicar (su key policy no lo permite). Los mensajes no llevan datos de clientes.
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: loan-collections-alerts
+
+  AlertsEmailSubscriptionV2:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # Logs -> metrica: cada linea JSON con level ERROR o CRITICAL suma 1.
+  AppErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref AppLogGroupName
+      FilterPattern: '{ ($.level = "ERROR") || ($.level = "CRITICAL") }'
+      MetricTransformations:
+        - MetricNamespace: LoanCollections/App
+          MetricName: AppErrorCount
+          MetricValue: '1'
+          DefaultValue: 0
+
+  AppErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: loan-collections-app-errors
+      AlarmDescription: La app escribio al menos un log con level ERROR o CRITICAL en el ultimo minuto
+      Namespace: LoanCollections/App
+      MetricName: AppErrorCount
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
+
+  RdsCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: loan-collections-rds-cpu-high
+      AlarmDescription: CPU de RDS sobre 80% durante 15 minutos
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !ImportValue loan-collections-db-identifier
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
+
+Outputs:
+  AlertsTopicArn:
+    Description: Topic de alertas, lo importan las alarmas condicionales de 06-alb.yaml
+    Value: !Ref AlertsTopic
+    Export:
+      Name: loan-collections-alerts-topic-arn
