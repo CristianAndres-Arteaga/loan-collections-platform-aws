@@ -109,7 +109,9 @@ Resources:
       LaunchTemplate:
         LaunchTemplateId: !Ref AppLaunchTemplate
         Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
-      MinSize: "0"
+      # MinSize = DesiredCapacity: encendido (1) el target tracking nunca baja a 0;
+      # apagado sigue siendo 0/0 (ver ADR-0014).
+      MinSize: !Ref DesiredCapacity
       MaxSize: "2"
       DesiredCapacity: !Ref DesiredCapacity
       VPCZoneIdentifier:
