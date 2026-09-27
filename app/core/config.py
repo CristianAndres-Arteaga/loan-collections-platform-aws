@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     cache_tls: bool = True
     cache_ttl_seconds: int = 300
 
+    # Observabilidad y fecha de negocio (Modulo 9)
+    log_level: str = "INFO"
+    business_timezone: str = "America/Bogota"
+
     @property
     def database_url(self) -> str:
         return (
