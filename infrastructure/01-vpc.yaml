@@ -63,8 +63,15 @@ Resources:
       InternetGatewayId: !Ref InternetGateway
 
   # --- Subnets: AZ1 (us-east-2a) ---
+  # AZs fijas por diseno (ADR-0001): cambiar AvailabilityZone fuerza el reemplazo
+  # de la subnet (y de todo lo que vive en ella), por eso W3010 se suprime por recurso.
   PublicSubnetA:
     Type: AWS::EC2::Subnet
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3010
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.0.0/24
@@ -76,6 +83,11 @@ Resources:
 
   PrivateSubnetA:
     Type: AWS::EC2::Subnet
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3010
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.10.0/24
@@ -86,6 +98,11 @@ Resources:
 
   DBSubnetA:
     Type: AWS::EC2::Subnet
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3010
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.20.0/24
@@ -97,6 +114,11 @@ Resources:
   # --- Subnets: AZ2 (us-east-2b) ---
   PublicSubnetB:
     Type: AWS::EC2::Subnet
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3010
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.1.0/24
@@ -108,6 +130,11 @@ Resources:
 
   PrivateSubnetB:
     Type: AWS::EC2::Subnet
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3010
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.11.0/24
@@ -118,6 +145,11 @@ Resources:
 
   DBSubnetB:
     Type: AWS::EC2::Subnet
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3010
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.21.0/24

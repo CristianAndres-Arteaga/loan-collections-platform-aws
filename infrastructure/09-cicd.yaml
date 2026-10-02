@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CI role for GitHub Actions (OIDC). Push + scan read on the app ECR repo only.
+  Infrastructure deploys stay manual (credit-controlled power on/off).
+
+Parameters:
+  GitHubOidcSubject:
+    Type: String
+    Description: Exact OIDC sub claim (GitHub embeds immutable owner/repo IDs)
+    Default: repo:CristianAndres-Arteaga@110110012/loan-collections-platform-aws@1362038188:ref:refs/heads/main
+
+Resources:
+  GitHubCiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: loan-collections-github-ci
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !ImportValue account-github-oidc-provider-arn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Ref GitHubOidcSubject
+      Policies:
+        - PolicyName: ecr-push-and-scan-read
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: EcrLogin
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: EcrPushAndScanRead
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:DescribeImages
+                  - ecr:DescribeImageScanFindings
+                Resource: !ImportValue loan-collections-ecr-repository-arn
+
+Outputs:
+  GitHubCiRoleArn:
+    Description: Role ARN for aws-actions/configure-aws-credentials
+    Value: !GetAtt GitHubCiRole.Arn

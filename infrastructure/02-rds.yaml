@@ -1,14 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Module 2 - RDS PostgreSQL (Free Tier: Single-AZ, AWS-managed encryption key,
-  manual master password) for Loan Collections Platform.
+  master password from SSM SecureString) for Loan Collections Platform.
 
 Parameters:
-  DBMasterPassword:
-    Type: String
-    NoEcho: true
-    MinLength: 8
-    Description: "Master password for the RDS instance. Pass via --parameter-overrides, never commit it to the repo."
   EnablePublicAccess:
     Type: String
     Description: "Acceso publico temporal a RDS para carga manual de DDL. Revertir a false apenas termine la tarea."
@@ -69,7 +64,8 @@ Resources:
       PubliclyAccessible: !Ref EnablePublicAccess
       StorageEncrypted: true
       MasterUsername: loanadmin
-      MasterUserPassword: !Ref DBMasterPassword
+      # Unica fuente de verdad: el mismo SecureString que lee el user-data (Modulo 5).
+      MasterUserPassword: '{{resolve:ssm-secure:/loan-collections/db-password}}'
       BackupRetentionPeriod: 1
       DeletionProtection: false
       Tags:
