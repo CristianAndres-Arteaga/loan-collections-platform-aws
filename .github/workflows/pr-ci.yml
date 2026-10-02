@@ -1,0 +1,58 @@
+name: pr-ci
+
+on:
+  pull_request:
+    branches: [main]
+
+# Sin id-token: este workflow NO puede pedir credenciales de AWS (pregunta 10.2d).
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint-templates:
+    name: cfn-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install cfn-lint (pinned)
+        run: pip install cfn-lint==1.57.1
+      - name: Lint all templates
+        run: cfn-lint infrastructure/*.yaml
+
+  build-and-smoke:
+    name: docker build + smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --pull -t loan-collections-api:ci .
+      - name: Start container with dummy DB settings
+        run: |
+          docker run -d --name api -p 8080:8080 \
+            -e DB_HOST=localhost -e DB_NAME=ci -e DB_USER=ci -e DB_PASSWORD=ci \
+            -e CACHE_HOST=disabled \
+            loan-collections-api:ci
+      - name: Wait for /health
+        run: |
+          for i in $(seq 1 15); do
+            if curl -fsS http://localhost:8080/health; then
+              echo; echo "healthy after ${i} attempt(s)"; exit 0
+            fi
+            sleep 2
+          done
+          echo "container never became healthy"; exit 1
+      - name: Container logs
+        if: always()
+        run: docker logs api
+      - name: Cleanup
+        if: always()
+        run: docker rm -f api
