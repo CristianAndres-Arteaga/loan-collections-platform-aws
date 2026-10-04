@@ -23,9 +23,10 @@ env:
   AWS_REGION: us-east-2
   ECR_REPOSITORY: loan-collections-api
   CI_ROLE_ARN: arn:aws:iam::552823820846:role/loan-collections-github-ci
-  # HIGH aceptados con riesgo documentado: zlib (ADR-0008), perl (ADR-0012).
+  # HIGH aceptados con riesgo documentado: zlib (ADR-0008); libstdc++ x2 y pcre2 (ADR-0016).
+  # perl CVE-2026-82560 (ADR-0012) retirado: el escáner dejó de reportarlo (sin parche, ver ADR-0016).
   # Un CRITICAL bloquea SIEMPRE, este o no en la lista.
-  CVE_ALLOWLIST: "CVE-2026-85091 CVE-2026-82560"
+  CVE_ALLOWLIST: "CVE-2026-85091 CVE-2026-102010 CVE-2026-95619 CVE-2026-103111"
 
 jobs:
   build-push-scan:
