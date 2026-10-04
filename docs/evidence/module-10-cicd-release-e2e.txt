@@ -1,0 +1,90 @@
+# Modulo 10 - CI/CD: release pipeline, scan gate, promocion y E2E - 2026-10-03/04 UTC
+# Transcrito de la salida de terminal y de GitHub Actions de la sesion. Se omiten la IP
+# del desarrollador, el secreto del header de CloudFront y los ARNs.
+
+## A) Lifecycle policy: proteger la imagen de produccion antes de encender el pipeline
+Estado inicial del repo ECR: 9 entradas (3 pushes manuales x index + amd64 + atestacion).
+Retag de produccion (put-image con el mismo manifest, sin pull ni rebuild):
+  media type: application/vnd.oci.image.index.v1+json
+  {"imageDigest": "sha256:e8ca2bb5...", "imageTag": "prod-1de2957"}   -> mismo digest, 9 filas
+
+Lifecycle policy preview (EXPERIMENTO: regla 1 prod-* keep 5, regla 2 any keep 1):
+  expiraria: 4509c454 (-), 9a7f61da (-), 21a03ed9 (cae670a), cb2eba00 (beb415f)  -> todas regla 2
+  NO expiraria: e8ca2bb5 (prod-1de2957) ni sus hijos sin tag d6095494 (amd64) y e0a39d76 (atestacion)
+  -> la proteccion del index se extiende a sus hijos.
+  Pregunta abierta: los hijos de beb415f (2c33385b, f27dc5dc) no aparecen y los de cae670a si.
+
+04-ecr.yaml desplegado (change set lifecycle-protect-prod: Modify ApiRepository, Replacement False):
+  rulePriority 1  "Protect promoted images: keep the last 5 prod-* tags"
+  rulePriority 2  "Keep only the last 10 non-promoted images"
+
+## B) Primer run del release (merge PR #5, imagen 1b95991) -> ROJO
+Wait for scan to complete:
+  intento 1/30: NOT_VISIBLE_YET      <- consistencia eventual (ScanNotFoundException), reintentado
+  intento 2/30: COMPLETE
+Scan gate:
+  HIGH CVE-2026-102010   HIGH CVE-2026-103111   HIGH CVE-2026-85091
+  HIGH CVE-2026-95619    MEDIUM CVE-2026-102473
+  aceptado (allowlist): HIGH CVE-2026-85091
+  Error: Hallazgos que bloquean la promocion: CVE-2026-102010, CVE-2026-103111, CVE-2026-95619
+  exit code 1
+Post job cleanup: Logging out of registry ... (amazon-ecr-login)
+
+ECR: 1b95991 = 1 sola fila (sha256:25bae181...), sin index ni atestacion (--provenance=false).
+
+Investigacion (ADR-0016):
+  Capas (primeras 5) prod d6095494 vs 1b95991: capa 0 identica (6b37362b3da7), resto distintas.
+  dpkg-query -W en ambas imagenes (identico):
+    libgcc-s1 14.2.0-19 / libstdc++6 14.2.0-19 / libpcre2-8-0 10.46-1~deb13u2
+    perl-base 5.40.1-6+deb13u1   <- CVE-2026-82560 ya no reportado, pero SIN parche
+  docker login/logout alrededor de la verificacion (token no queda en ~/.docker/config.json).
+
+## C) Segundo run del release (merge PR #6, allowlist + ADR-0016, imagen 158c35a) -> VERDE
+GitHub API: release 158c35a  status completed  conclusion success
+            release 1b95991  status completed  conclusion failure   (queda sin promover)
+El workflow se disparo sin cambios en app/: el filtro paths incluye el propio release.yml.
+
+## D) Promocion con scripts/env.sh
+status antes:  ImageTag (05) 1de2957   ASG 0 0 0   CreateAlb false   VPC endpoints 0
+promote 158c35a (primer intento): resumen del scan = null (describe-images no trae
+  imageScanFindingsSummary) -> cancelado con N; corregido a describe-image-scan-findings.
+promote 158c35a (segundo intento):
+  {"HIGH": 4, "MEDIUM": 1}   -> confirmado y
+  {"imageDigest": "sha256:5926632c...", "imageTag": "prod-158c35a"}
+  deploy loan-collections-compute (05-compute.yaml @ 158c35a): ImageTag=158c35a
+status despues: ImageTag (05) 158c35a   tags: prod-158c35a 158c35a
+
+## E) Encendido: ./scripts/env.sh up  (real 8m58s)
+03:16:16  deploy loan-collections-vpc      CreateEcrEndpoints=true                     1m10s
+03:17:26  deploy loan-collections-alb      CreateAlb=true AllowedClientCidr=<IP>/32
+                                           OriginVerifySecret=****                     5m46s  (CloudFront)
+03:23:12  deploy loan-collections-compute  DesiredCapacity=1                           40s
+03:23:52  espera /health: 502 x5 -> 200                                                1m21s
+          (502 = target registrado pero contenedor aun sin escuchar; fail-open del ALB)
+
+## F) Pruebas E2E (via CloudFront)
+T1 /health                    HTTP/2 200   server: uvicorn   x-cache: Miss from cloudfront
+T2 /installments/?overdue=true HTTP 200 en 0.69 s
+   -> la app inicia sesion en RDS con la contrasena resuelta desde ssm-secure (cambio de 10.3)
+T3 docker ps (via SSM Run Command):
+   IMAGE .../loan-collections-api:158c35a   STATUS Up About a minute   0.0.0.0:8080->8080/tcp
+T4 aws logs tail /loan-collections/app (extracto):
+   {"timestamp": "2026-10-04T03:26:20.508+00:00", "level": "INFO", "logger": "uvicorn.access", "message": "10.0.0.156:56966 - \"GET /health HTTP/1.1\" 200"}
+   {"timestamp": "2026-10-04T03:26:20.581+00:00", "level": "INFO", "logger": "uvicorn.access", "message": "10.0.1.51:47262 - \"GET /health HTTP/1.1\" 200"}
+   {"timestamp": "2026-10-04T03:26:46.078+00:00", "level": "INFO", "logger": "uvicorn.access", "message": "10.0.1.51:12534 - \"GET /installments/?overdue=true HTTP/1.1\" 200"}
+   -> health checks desde un nodo del ALB por AZ (10.0.0.x y 10.0.1.x).
+
+## G) Apagado: ./scripts/env.sh down  (real 8m16s)
+03:27:50  deploy loan-collections-compute  DesiredCapacity=0                           39s
+03:28:29  deploy loan-collections-alb      CreateAlb=false AllowedClientCidr=127.0.0.1/32  4m14s
+03:32:43  deploy loan-collections-vpc      CreateEcrEndpoints=false                    3m12s
+Estado final: ImageTag 158c35a   ASG 0 0 0   CreateAlb false   AllowedClientCidr 127.0.0.1/32
+              CreateEcrEndpoints false   VPC endpoints 0   CdnUrl None
+
+## No probado
+- Rollback real (./scripts/env.sh promote 1de2957): el camino es el mismo que la promocion,
+  sin retag porque prod-1de2957 ya existe.
+- Un CRITICAL bloqueando el gate (no hubo ninguno).
+- Expiracion real por la lifecycle policy (solo preview; el repo no supera 10 imagenes sin promover).
+- Zona horaria por defecto de la imagen: 05 sigue pasando BUSINESS_TIMEZONE=America/La_Paz
+  por variable de entorno, asi que el default de config.py no se ejercita en AWS.
