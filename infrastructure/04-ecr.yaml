@@ -11,13 +11,27 @@ Resources:
         ScanOnPush: true
       EncryptionConfiguration:
         EncryptionType: AES256
+      # Regla 1 protege lo promovido (tag prod-<sha>, agregado a mano al desplegar 05).
+      # Una imagen retenida por una regla de mayor prioridad no puede expirarla una de menor.
+      # Preview 2026-10-03: los hijos (amd64/atestación) de un index protegido tampoco expiran.
       LifecyclePolicy:
         LifecyclePolicyText: |
           {
             "rules": [
               {
                 "rulePriority": 1,
-                "description": "Keep only the last 10 images",
+                "description": "Protect promoted images: keep the last 5 prod-* tags",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "tagPatternList": ["prod-*"],
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 5
+                },
+                "action": { "type": "expire" }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Keep only the last 10 non-promoted images",
                 "selection": {
                   "tagStatus": "any",
                   "countType": "imageCountMoreThan",
