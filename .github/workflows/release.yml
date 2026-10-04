@@ -1,0 +1,128 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - '.github/workflows/release.yml'
+
+# id-token: write es lo que habilita OIDC (pr-ci.yml NO lo tiene, pregunta 10.2d).
+permissions:
+  contents: read
+  id-token: write
+
+# Nunca cancelar un release a medias (un push interrumpido deja estado raro).
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REPOSITORY: loan-collections-api
+  CI_ROLE_ARN: arn:aws:iam::552823820846:role/loan-collections-github-ci
+  # HIGH aceptados con riesgo documentado: zlib (ADR-0008), perl (ADR-0012).
+  # Un CRITICAL bloquea SIEMPRE, este o no en la lista.
+  CVE_ALLOWLIST: "CVE-2026-85091 CVE-2026-82560"
+
+jobs:
+  build-push-scan:
+    name: build, push, scan gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compute image tag
+        run: |
+          echo "IMAGE_TAG=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "IMAGE_URI=${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      # Re-run seguro: si el tag ya existe (repo IMMUTABLE), no se vuelve a pushear.
+      - name: Check if tag already exists
+        id: exists
+        run: |
+          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+               --image-ids imageTag="$IMAGE_TAG" > /dev/null 2>&1; then
+            echo "Tag $IMAGE_TAG ya existe en ECR: se omite build/push."
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build image
+        if: steps.exists.outputs.found == 'false'
+        run: |
+          docker build --pull --provenance=false --platform linux/amd64 \
+            -t "$IMAGE_URI" .
+
+      - name: Push image
+        if: steps.exists.outputs.found == 'false'
+        run: docker push "$IMAGE_URI"
+
+      # Consistencia eventual: el scan existe pero la API puede no verlo aun.
+      - name: Wait for scan to complete
+        run: |
+          for i in $(seq 1 30); do
+            if out=$(aws ecr describe-image-scan-findings \
+                       --repository-name "$ECR_REPOSITORY" \
+                       --image-id imageTag="$IMAGE_TAG" \
+                       --query 'imageScanStatus.status' --output text 2> err.txt); then
+              status="$out"
+            elif grep -q ScanNotFoundException err.txt; then
+              status="NOT_VISIBLE_YET"
+            else
+              echo "::error::Error inesperado consultando el scan:"; cat err.txt; exit 1
+            fi
+            echo "intento $i/30: $status"
+            case "$status" in
+              COMPLETE) exit 0 ;;
+              FAILED|UNSUPPORTED_IMAGE) echo "::error::Scan terminó en $status"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::El scan no terminó en 5 minutos"; exit 1
+
+      - name: Scan gate
+        run: |
+          aws ecr describe-image-scan-findings \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-id imageTag="$IMAGE_TAG" --output json > findings.json
+
+          jq -r '(.imageScanFindings.findings // [])[] | "\(.severity) \(.name)"' \
+            findings.json | sort > all.txt
+          echo "== Todos los hallazgos =="; cat all.txt
+
+          blocking=""
+          while read -r sev cve; do
+            if [ "$sev" = "HIGH" ] && [[ " $CVE_ALLOWLIST " == *" $cve "* ]]; then
+              echo "aceptado (allowlist): $sev $cve"
+            else
+              blocking="${blocking}${sev} ${cve}"$'\n'
+            fi
+          done < <(grep -E '^(CRITICAL|HIGH) ' all.txt || true)
+
+          {
+            echo "### Imagen \`$IMAGE_TAG\`"
+            echo '```'; cat all.txt; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$blocking" ]; then
+            echo "::error::Hallazgos que bloquean la promoción:"; printf '%s' "$blocking"
+            echo "**BLOQUEADA**: no promover esta imagen." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Gate OK: $IMAGE_TAG es apta para promover (ImageTag en 05-compute)."
+          echo "**APTA** para promover." >> "$GITHUB_STEP_SUMMARY"
