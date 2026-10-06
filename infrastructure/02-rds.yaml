@@ -49,7 +49,8 @@ Resources:
   # --- RDS Instance (Free Tier: db.t3.micro, Single-AZ, 20GB gp3) ---
   DBInstance:
     Type: AWS::RDS::DBInstance
-    DeletionPolicy: Delete
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
     Properties:
       DBInstanceIdentifier: loan-collections-db
       Engine: postgres
@@ -67,7 +68,7 @@ Resources:
       # Unica fuente de verdad: el mismo SecureString que lee el user-data (Modulo 5).
       MasterUserPassword: '{{resolve:ssm-secure:/loan-collections/db-password}}'
       BackupRetentionPeriod: 1
-      DeletionProtection: false
+      DeletionProtection: true
       Tags:
         - Key: Name
           Value: loan-collections-db
