@@ -10,6 +10,12 @@ Parameters:
     Default: "false"
     AllowedValues: ["true", "false"]
 
+  EnableMultiAz:
+    Type: String
+    Description: "Standby sincrona en otra AZ (x2 costo instancia+storage). Solo para pruebas de failover; revertir a false al terminar."
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
 Resources:
 
   # --- DB Subnet Group ---
@@ -46,10 +52,11 @@ Resources:
         - Key: Name
           Value: loan-collections-db-sg
 
-  # --- RDS Instance (Free Tier: db.t3.micro, Single-AZ, 20GB gp3) ---
+  # --- RDS Instance (Free Tier: db.t3.micro, Single-AZ por defecto, 20GB gp3) ---
   DBInstance:
     Type: AWS::RDS::DBInstance
-    DeletionPolicy: Delete
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
     Properties:
       DBInstanceIdentifier: loan-collections-db
       Engine: postgres
@@ -57,7 +64,7 @@ Resources:
       DBInstanceClass: db.t3.micro
       AllocatedStorage: 20
       StorageType: gp3
-      MultiAZ: false
+      MultiAZ: !Ref EnableMultiAz
       DBSubnetGroupName: !Ref DBSubnetGroup
       VPCSecurityGroups:
         - !Ref DBSecurityGroup
@@ -67,7 +74,7 @@ Resources:
       # Unica fuente de verdad: el mismo SecureString que lee el user-data (Modulo 5).
       MasterUserPassword: '{{resolve:ssm-secure:/loan-collections/db-password}}'
       BackupRetentionPeriod: 1
-      DeletionProtection: false
+      DeletionProtection: true
       Tags:
         - Key: Name
           Value: loan-collections-db

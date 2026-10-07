@@ -1,0 +1,55 @@
+# Modulo 11 - HA/DR: copia de snapshot de RDS a otra region (us-east-2 -> us-west-2) - 2026-10-07 UTC
+# Transcrito de la salida de terminal de la sesion.
+
+## A) Snapshot manual en la region primaria (us-east-2)
+aws rds create-db-snapshot --db-instance-identifier loan-collections-db
+  --db-snapshot-identifier loan-collections-db-dr-20261007 --tags Key=Purpose,Value=dr-drill
+  -> {"Id": "loan-collections-db-dr-20261007", "Status": "creating"}
+02:28:36  date -u despues del create
+02:28:40  SnapshotCreateTime (us-east-2) = 2026-10-07T02:28:40.497Z
+02:32:10  aws rds wait db-snapshot-available -> exit 0
+  -> 3 min 34 s
+
+## B) Copia a la region de DR (us-west-2)
+SRC_ARN arn:aws:rds:us-east-2:552823820846:snapshot:loan-collections-db-dr-20261007
+02:32:49  aws rds copy-db-snapshot --region us-west-2 --source-region us-east-2
+            --source-db-snapshot-identifier "$SRC_ARN"
+            --target-db-snapshot-identifier loan-collections-db-dr-20261007
+            --kms-key-id alias/aws/rds --copy-tags
+          -> {"Id": "loan-collections-db-dr-20261007", "Status": "creating"}
+02:34:26  aws rds wait db-snapshot-available --region us-west-2 -> exit 0
+  -> 1 min 37 s
+El plan Free de la cuenta PERMITIO la copia entre regiones (antes era una duda abierta).
+
+## C) Verificacion de la copia (us-west-2)
+describe-db-snapshots --region us-west-2:
+  Status available   Encrypted true   SourceRegion us-east-2   EngineVersion 16.15   AllocatedStorage 20 GB
+  KmsKeyId arn:aws:kms:us-west-2:552823820846:key/0c1d8bb9-e5a3-43e0-895d-dbcc53767c26
+  TagList Purpose=dr-drill (por --copy-tags)
+  SnapshotCreateTime          2026-10-07T02:34:22.107Z   <- hora de la COPIA
+  OriginalSnapshotCreateTime  2026-10-07T02:28:40.497Z   <- hora de los DATOS (= SnapshotCreateTime en us-east-2)
+
+## D) Limpieza
+delete-db-snapshot --region us-west-2 loan-collections-db-dr-20261007 -> "deleted"
+delete-db-snapshot (us-east-2)        loan-collections-db-dr-20261007 -> "deleted"
+describe-db-snapshots --snapshot-type manual: [] en us-west-2 y [] en us-east-2
+
+## Observaciones
+- Las claves KMS son regionales: la copia quedo cifrada con la clave aws/rds de us-west-2,
+  distinta de la de us-east-2. Hay que indicar --kms-key-id de la region destino.
+- El comando se ejecuta en la region DESTINO; --source-region hace que la CLI genere la URL
+  prefirmada para leer el snapshot de origen.
+- Para medir el RPO de una copia hay que leer OriginalSnapshotCreateTime, no SnapshotCreateTime.
+- La copia (1m37s) tardo menos que el snapshot local (3m34s): con pocos datos reales domina el
+  costo fijo de crear el snapshot, no la transferencia. Los 20 GB son almacenamiento reservado,
+  no ocupado. No extrapolar estos tiempos a una base grande (la primera copia entre regiones es completa).
+- Un snapshot manual sobrevive al borrado de la instancia; los backups automaticos no.
+
+## No probado
+- Restaurar la copia en us-west-2: no hay VPC, DB subnet group ni security group del proyecto en esa
+  region. Tampoco existen alli la imagen de ECR, los parametros de SSM (contrasena via ssm-secure),
+  los exports de CloudFormation ni los IDs regionales (AMI, prefix list de CloudFront pl-b6a144df).
+- Copia programada (AWS Backup con regla de copia entre regiones) o replicacion automatica de backups
+  entre regiones (PITR en la region de DR).
+- Costo real facturado de almacenamiento y transferencia (se estimo en centavos; snapshots borrados
+  ~6 min despues de la copia).
