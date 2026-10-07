@@ -1,0 +1,70 @@
+# Modulo 11 - HA/DR: simulacro de restauracion PITR de RDS - 2026-10-06 UTC
+# Transcrito de la salida de terminal de la sesion. Se omiten la contrasena de la base,
+# los IDs de sesion de SSM y el sufijo de los endpoints de RDS.
+
+## A) Estado inicial (00:41:51)
+describe-db-instances loan-collections-db:
+  az us-east-2b   multiAz False   clase db.t3.micro   retencion 1   cifrado True
+  proteccion (DeletionProtection) False
+  ultimoRestaurable 00:33:48  vs  date -u 00:41:51   -> 8 min de atraso
+describe-db-snapshots --snapshot-type manual: 0 resultados (tabla vacia, sin encabezado)
+Configuracion que el restore NO hereda y hay que pasar explicita:
+  VpcSecurityGroups sg-07945dd48405ae8b8   DBSubnetGroup loan-collections-db-subnet-group
+  DBParameterGroup default.postgres16 (default del motor: perderlo no cambia nada aqui)
+  EngineVersion 16.15   AllocatedStorage 20 GB
+Bastion (acceso de administracion): us-east-2a   <- distinta AZ que RDS
+
+## B) Linea base y marca en produccion (tunel SSM localhost:15432 -> bastion -> RDS)
+Conteos: clients 1 / loans 1 / installments 1 / payments 2 / users 1
+CREATE TABLE dr_drill_marker (id serial, note text, created_at timestamptz DEFAULT now())
+INSERT marker-1   -> created_at 2026-10-06 00:46:32.353853+00
+(marker-2 previsto en el plan no se inserto)
+
+## C) Restore a punto en el tiempo
+00:47:51  LatestRestorableTime 00:43:49   (todavia ANTERIOR a marker-1)
+00:48:15  restore-db-instance-to-point-in-time --use-latest-restorable-time
+            --target loan-collections-db-drill --db-instance-class db.t3.micro
+            --db-subnet-group-name loan-collections-db-subnet-group
+            --vpc-security-group-ids sg-07945dd48405ae8b8
+            --no-multi-az --no-publicly-accessible --no-deletion-protection
+            --tags Purpose=dr-drill
+          LatestRestorableTime al lanzar: 00:43:49   -> punto de restauracion
+          {"id": "loan-collections-db-drill", "status": "creating"}
+00:50:51  InstanceCreateTime de la copia
+01:15:44  estado backing-up   az us-east-2a (no se paso --availability-zone)   sg correcto
+01:16:55  psql conecta a la copia (tunel localhost:15433)
+01:16:57  aws rds wait db-instance-available termina
+
+## D) Verificacion de la copia
+Conteos: clients 1 / loans 1 / installments 1 / payments 2 / users 1   -> identicos a B
+SELECT * FROM dr_drill_marker;
+  ERROR:  relation "dr_drill_marker" does not exist
+  -> la tabla se creo a las 00:46:32, despues del punto de restauracion (00:43:49).
+
+## E) Resultados
+RPO medido:  4 min 26 s (00:43:49 -> 00:48:15) de escrituras ausentes en la copia.
+             Con PITR el atraso observado fue de 4-8 min; nunca es 0.
+RTO medido:  28 min 40 s (00:48:15 -> 01:16:55), solo la capa de base de datos.
+             No incluye apuntar la app al endpoint nuevo (DB_HOST que usa 05 + Instance Refresh).
+Objetivo propuesto (11.1): RPO 5 min / RTO 1 h   -> RTO cumple; RPO en el limite.
+
+## F) Limpieza
+delete-db-instance loan-collections-db-drill --skip-final-snapshot --delete-automated-backups
+  {"id": "loan-collections-db-drill", "estado": "deleting"}
+Produccion: DROP TABLE dr_drill_marker;  \dt -> 8 tablas de la app
+describe-db-instances (final): solo loan-collections-db  available
+PGPASSWORD eliminado de las terminales (unset); tuneles cerrados.
+
+## Observaciones
+- El restore crea una instancia NUEVA con otro endpoint; nunca sobrescribe la original.
+- La copia cayo en otra AZ (2a) que produccion (2b): el subnet group de 2 AZs es lo que
+  permite restaurar si cae la AZ de la base. En un DR real se fija --availability-zone.
+- Las sesiones de Session Manager se cerraron solas tras ~20 min sin trafico.
+- Con DeletionPolicy: Delete y 0 snapshots manuales, borrar el stack 02 hoy = perdida total
+  (los backups automaticos se borran con la instancia). Se corrige en 11.3.
+
+## No probado
+- marker-2 (escritura justo antes del restore): el RPO se demostro igual con marker-1.
+- Si la instancia acepta conexiones durante backing-up (paso a available 2 s despues de conectar).
+- Restaurar en una AZ elegida (--availability-zone) y reconectar la app a la copia.
+- Restore desde snapshot manual y desde otra region.
