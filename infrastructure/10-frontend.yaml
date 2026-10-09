@@ -1,0 +1,44 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Loan Collections - Frontend estatico. Bucket S3 privado, siempre encendido
+  (costo ~0). Solo se lee via CloudFront + OAC: la bucket policy, el OAC y los
+  behaviors viven en 06-alb.yaml bajo AlbEnabled (nacen y mueren con la
+  distribucion; evita export lock en env.sh down).
+
+Resources:
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    # Sin Retain: la cuenta se cierra al final del proyecto. Vaciar el bucket
+    # (aws s3 rm --recursive) antes de borrar el stack.
+    Properties:
+      BucketName: !Sub loan-collections-frontend-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      # SSE-S3: con SSE-KMS (aws/s3) CloudFront no podria descifrar.
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Project
+          Value: loan-collections
+
+Outputs:
+  FrontendBucketName:
+    Value: !Ref FrontendBucket
+    Export:
+      Name: loan-collections-frontend-bucket-name
+  FrontendBucketArn:
+    Value: !GetAtt FrontendBucket.Arn
+    Export:
+      Name: loan-collections-frontend-bucket-arn
+  FrontendBucketRegionalDomainName:
+    Value: !GetAtt FrontendBucket.RegionalDomainName
+    Export:
+      Name: loan-collections-frontend-bucket-regional-domain-name
