@@ -153,11 +153,12 @@ Resources:
     Properties:
       DistributionConfig:
         Enabled: true
-        Comment: loan-collections - HTTPS delante del ALB (ADR-0013)
+        Comment: loan-collections - frontend S3 (OAC) + API /api/* via ALB (ADR-0013, ADR-0018)
         PriceClass: PriceClass_100
         HttpVersion: http2
         # El filtro de IP es IPv4 /32; con IPv6 el navegador podria entrar por v6 y quedar bloqueado.
         IPV6Enabled: false
+        DefaultRootObject: index.html
         Origins:
           - Id: alb-origin
             DomainName: !GetAtt ApplicationLoadBalancer.DNSName
@@ -167,21 +168,89 @@ Resources:
             OriginCustomHeaders:
               - HeaderName: X-Origin-Verify
                 HeaderValue: !Ref OriginVerifySecret
+          # Bucket privado de 10-frontend.yaml; solo legible via OAC (SigV4).
+          - Id: frontend-s3-origin
+            DomainName: !ImportValue loan-collections-frontend-bucket-regional-domain-name
+            OriginAccessControlId: !GetAtt FrontendOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""   # vacio obligatorio cuando se usa OAC
+        # Default: frontend estatico. Sin origin request policy: reenviar headers
+        # del viewer a S3 rompe la firma SigV4 del OAC.
         DefaultCacheBehavior:
-          TargetOriginId: alb-origin
+          TargetOriginId: frontend-s3-origin
           ViewerProtocolPolicy: redirect-to-https
-          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+          AllowedMethods: [GET, HEAD]
           CachedMethods: [GET, HEAD]
-          # Managed-CachingDisabled: es una API, no contenido estatico.
-          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-          # Managed-AllViewerExceptHostHeader: el ALB recibe su propio Host.
-          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          # Managed-CachingOptimized: contenido estatico.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
           Compress: true
           FunctionAssociations:
             - EventType: viewer-request
               FunctionARN: !GetAtt IpFilterFunction.FunctionMetadata.FunctionARN
+        CacheBehaviors:
+          # API: mismo comportamiento que tenia el default antes del M12a.
+          # La funcion de IP se asocia POR behavior: sin ella /api/* quedaria abierta.
+          - PathPattern: /api/*
+            TargetOriginId: alb-origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachedMethods: [GET, HEAD]
+            # Managed-CachingDisabled: es una API, no contenido estatico.
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            # Managed-AllViewerExceptHostHeader: el ALB recibe su propio Host.
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            Compress: true
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt IpFilterFunction.FunctionMetadata.FunctionARN
         ViewerCertificate:
           CloudFrontDefaultCertificate: true
+
+  FrontendOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Condition: AlbEnabled
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-frontend-oac
+        Description: CloudFront firma (SigV4) las lecturas al bucket del frontend
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Vive aqui (no en 10-frontend) porque necesita el ARN de la distribucion, que
+  # nace y muere con AlbEnabled. Con el ambiente apagado el bucket queda sin
+  # policy = cerrado a todo principal externo (ADR-0018).
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: AlbEnabled
+    Properties:
+      Bucket: !ImportValue loan-collections-frontend-bucket-name
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontOacReadThisDistributionOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub
+              - "${BucketArn}/*"
+              - BucketArn: !ImportValue loan-collections-frontend-bucket-arn
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CdnDistribution}
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !ImportValue loan-collections-frontend-bucket-arn
+              - !Sub
+                - "${BucketArn}/*"
+                - BucketArn: !ImportValue loan-collections-frontend-bucket-arn
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
 
   # Alarmas del ALB: viven aqui para nacer y morir con el ALB (el nombre completo
   # del ALB lleva un sufijo aleatorio que cambia al recrearlo; ver ADR-0014).
