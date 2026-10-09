@@ -3,7 +3,7 @@
 #
 #   ./scripts/env.sh status          estado actual (solo lectura)
 #   ./scripts/env.sh promote <tag>   tag prod-<tag> + ImageTag en 05 (solo con ASG en 0)
-#   ./scripts/env.sh up              endpoints -> ALB/CloudFront -> ASG, espera /health 200
+#   ./scripts/env.sh up              endpoints -> ALB/CloudFront -> ASG, espera /api/installments/ 200 (cadena completa)
 #   ./scripts/env.sh down            ASG -> ALB/CloudFront -> endpoints
 #
 # Solo cambia parametros de encendido/apagado. Los templates se leen SIEMPRE de
@@ -111,9 +111,9 @@ cmd_up() {
   deploy "$COMPUTE_STACK" 05-compute.yaml DesiredCapacity=1
 
   cdn="$(stack_output "$ALB_STACK" CdnUrl)"
-  log "Esperando $cdn/health = 200 (máx. 10 min)..."
+  log "Esperando $cdn/api/installments/?overdue=true = 200 (máx. 10 min)..."
   for i in $(seq 1 40); do
-    code="$(curl -s -o /dev/null -w '%{http_code}' "$cdn/health" || true)"
+    code="$(curl -s -o /dev/null -w '%{http_code}' "$cdn/api/installments/?overdue=true" || true)"
     echo "  intento $i/40: $code"
     if [ "$code" = "200" ]; then
       log "Entorno listo: $cdn"
@@ -121,7 +121,7 @@ cmd_up() {
     fi
     sleep 15
   done
-  die "/health no llegó a 200 en 10 min. El entorno sigue ENCENDIDO: investiga o corre '$0 down'."
+  die "/api/installments/ no llegó a 200 en 10 min. El entorno sigue ENCENDIDO: investiga o corre '$0 down'."
 }
 
 cmd_down() {

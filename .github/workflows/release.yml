@@ -80,7 +80,7 @@ jobs:
             if out=$(aws ecr describe-image-scan-findings \
                        --repository-name "$ECR_REPOSITORY" \
                        --image-id imageTag="$IMAGE_TAG" \
-                       --query 'imageScanStatus.status' --output text 2> err.txt); then
+                       --query 'imageScanStatus.status' --output text --no-paginate 2> err.txt); then
               status="$out"
             elif grep -q ScanNotFoundException err.txt; then
               status="NOT_VISIBLE_YET"
