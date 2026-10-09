@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Loan Collections API")
 
-app.include_router(clients.router)
-app.include_router(installments.router)
+app.include_router(clients.router, prefix="/api")
+app.include_router(installments.router, prefix="/api")
 
 logger.info(
     "app iniciada: cache=%s, business_timezone=%s",
