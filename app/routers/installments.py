@@ -85,6 +85,6 @@ def registrar_pago(installment_id: int, payload: PaymentCreate, db: Session = De
     db.refresh(payment)
     logger.info(
         "pago registrado: payment_id=%s installment_id=%s status=%s",
-        payment.id, installment_id, installment.status,
+        payment.payment_id, installment_id, installment.status,
     )
     return payment
