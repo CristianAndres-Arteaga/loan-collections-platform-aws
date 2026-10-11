@@ -1,0 +1,114 @@
+# Modulo 12a - Frontend estatico en S3 via CloudFront (OAC) + API bajo /api - 2026-10-08/09 y 2026-10-10/11 UTC
+# Transcrito de la salida de terminal de las sesiones. Se omite la IP publica del cliente
+# (la imprime env.sh up; AllowedClientCidr queda en 127.0.0.1/32 al apagar).
+# Las CdnUrl citadas ya no existen: cada env.sh up crea una distribucion nueva.
+
+## A) Implementacion (PR #10 -> main 1b2671c, PR #11 -> main 6204be4)
+FastAPI: include_router(prefix="/api")  -> /api/installments/...  (/health sigue en la raiz: health check del TG)
+Stack nuevo loan-collections-frontend (10-frontend.yaml) CREATE_COMPLETE, siempre encendido:
+  bucket loan-collections-frontend-552823820846-us-east-2
+  Block Public Access x4, BucketOwnerEnforced, SSE-S3 (AES256)
+  exports: bucket-name, bucket-arn, bucket-regional-domain-name
+06-alb.yaml (todo bajo Condition AlbEnabled: nace y muere con la distribucion):
+  DefaultCacheBehavior  *       -> frontend-s3-origin (OAC)  GET/HEAD  CachingOptimized   sin origin request policy
+  CacheBehavior         /api/*  -> alb-origin                 todos los metodos  CachingDisabled  AllViewerExceptHostHeader
+  IpFilterFunction (viewer-request) asociada a AMBOS behaviors
+  DefaultRootObject index.html
+  FrontendBucketPolicy: s3:GetObject solo para cloudfront.amazonaws.com con
+    AWS:SourceArn = arn:aws:cloudfront::552823820846:distribution/<dist>  + Deny aws:SecureTransport=false
+Change set de 06 con CreateAlb=false -> FAILED "didn't contain changes":
+  los recursos nuevos son todos condicionales -> el primer env.sh up es el deploy real.
+env.sh up (PR #11): la espera pasa de $CDN/health (ahora cae en S3 -> 403) a $CDN/api/installments/?overdue=true
+release.yml (PR #11): --no-paginate en la espera del scan (el paginador de la CLI fallaba
+  con 'NoneType' item assignment mientras el scan estaba IN_PROGRESS).
+
+## B) E2E 2026-10-08/09 (imagen 6204be4)
+up: 5x502 -> 200 (~80 s, fail-open del ALB con la instancia registrada pero aun no sana)
+T1  GET $CDN/                      200  Server: AmazonS3        (index.html desde S3 via OAC)
+T2  GET $CDN/api/installments/     200  server: uvicorn         (behavior /api/* -> ALB)
+T3  GET $CDN/health                403                          (cae en el behavior * -> S3, no existe el objeto)
+T4  GET bucket directo (s3 URL)    403                          (bucket privado, sin acceso publico)
+T5  IpFilterFunction en viewer-request de * y de /api/*
+T6  bucket policy con SourceArn = distribucion EO5T7JJCSRE4M
+BUG encontrado: el header de la app X-Cache (HIT/MISS de ElastiCache) llega al navegador
+  sobrescrito por CloudFront ("Miss from cloudfront").
+down 02:08 -> 02:16 (8 min 6 s)
+
+## C) Fix del header (PR #12 -> main 6edff15)
+X-Cache -> X-App-Cache en app/routers/installments.py y frontend/app.js.
+Las ADR y evidencias anteriores conservan X-Cache (registro historico).
+
+## D) Datos de demo (database/demo-data.sql) - 2026-10-11 ~01:32Z
+Cargado via tunel SSM (bastion -> RDS, puerto local 15432), base loan_collections, usuario loanadmin
+  (password: SSM SecureString /loan-collections/db-password; MasterUserSecret de RDS = None).
+Fechas relativas a CURRENT_DATE, offsets >= 5 dias (RDS en UTC vs app en America/La_Paz).
+Transaccion + guarda de idempotencia (RAISE EXCEPTION si los clientes demo ya existen).
+Salida: BEGIN / DO / INSERT 0 1 / INSERT 0 4 / INSERT 0 4 / INSERT 0 12 / INSERT 0 7 / COMMIT
+   status         | count | vencidas
+  paid            |     7 |        0
+  partially_paid  |     1 |        1
+  pending         |     5 |        2
+Hallazgo: el filtro de vencidas de la API es due_date < hoy AND status IN ('pending','partially_paid');
+  el estado 'late' del CHECK no lo escribe ni lo lee nadie -> las cuotas demo vencidas van como 'pending'.
+
+## E) E2E 2026-10-11 con 6edff15 (promote con el entorno apagado)
+promote 6edff15: scan HIGH 1 (antes 2) -> prod-6edff15
+aws s3 sync frontend/ ... --delete --cache-control no-cache -> solo subio app.js (sync compara tamano/fecha)
+  (hecho ANTES del up: el bucket es siempre encendido y el PutObject lo autoriza IAM, no la bucket policy)
+up 01:42:58 -> 01:55:34 (12 min 36 s): vpc 1m45, alb+CloudFront 8m50, compute 41s, health 1m20 (5x502 -> 200)
+CdnUrl https://d2erzinf1kam8n.cloudfront.net
+curl -D - $CDN/api/installments/?overdue=true:
+  HTTP/2 200
+  x-app-cache: MISS                 <- header de la app, ahora llega intacto
+  x-cache: Miss from cloudfront     <- header de CloudFront
+  jq length -> 3
+  (MISS siempre: el stack de cache no es parte de env.sh up; cache_get falla abierto -> None)
+Dashboard: 3 vencidas (docs/screenshots/01-dashboard-overdue.png)
+Pago desde la UI de la cuota #8 (313.50): la UI mostro error, pero la cuota quedo 'paid'.
+CloudWatch Logs (filtro "payments"): UN solo POST -> sin pago duplicado
+  02:05:27  "POST /api/installments/8/payments HTTP/1.1" 500
+  traceback: app/routers/installments.py line 88, in registrar_pago
+             AttributeError: 'Payment' object has no attribute 'id'
+Causa: log agregado en el Modulo 9 usa payment.id; la PK es payment_id. El commit del pago ya habia
+  ocurrido -> 500 sobre una operacion exitosa (invita a reintentar = pago duplicado).
+  No detectado antes: ultimo POST probado fue el E2E del Modulo 7; el smoke de CI solo prueba /health.
+Dashboard tras recargar: 2 vencidas, monto 1567.50 (docs/screenshots/02-after-payment.png)
+
+## F) Fix del endpoint de pagos (PR #13 -> main 386db92)
+payment.id -> payment.payment_id
+db.get(Installment, id, with_for_update=True)  -> pagos concurrentes sobre la misma cuota se serializan
+409 "La cuota ya está pagada" si status = paid
+409 "El monto excede el saldo pendiente (<saldo>)" si amount_paid > amount_due - SUM(payments)
+promote con el entorno encendido -> rechazado por env.sh:
+  "ERROR: promover solo con el ASG en 0" (05 DesiredCapacity default 0 apagaria la instancia en uso;
+  05 no tiene UpdatePolicy -> la instancia vieja seguiria con la imagen anterior)
+down 02:23:53 -> 02:32:00 (8 min 7 s)
+promote 386db92: scan HIGH 1 -> prod-386db92 (02:33:25 -> 02:34:19)
+up 02:34:27 -> 02:47:27 (13 min 0 s): vpc 1m40, alb+CloudFront 9m21, compute 40s, health 1m19 (5x502 -> 200)
+CdnUrl https://d201djze6g8eou.cloudfront.net
+~/e2e-payment-guard.txt:
+  T1 POST /api/installments/8/payments 313.50 (ya paid)     -> 409 {"detail":"La cuota ya está pagada"}
+  T2 POST /api/installments/6/payments 1045.00 (saldo 545)  -> 409 {"detail":"El monto excede el saldo pendiente (545.00)"}
+  T3 POST /api/installments/6/payments 545.00 (saldo exacto)-> 201 payment_id 12
+  T4 GET  /api/installments/?overdue=true | jq length       -> 1
+Dashboard: 1 vencida (Carla #4, 522.50), 0 parciales (docs/screenshots/03-payment-guard.png)
+
+## G) Apagado
+02:51:58 -> 03:00:04  env.sh down (8 min 6 s): compute 40s, alb+CloudFront 4m14, vpc endpoints 3m12
+Estado final: ImageTag 386db92 (prod)  ASG 0/0/0  CreateAlb false  AllowedClientCidr 127.0.0.1/32
+              CreateEcrEndpoints false  VPC endpoints 0  CdnUrl None
+Tiempo encendido en la sesion del 10-11: 01:42:58 -> 02:32:00 y 02:34:27 -> 03:00:04 (~75 min en total).
+
+## Observaciones
+- Mismo origen para la UI y la API (una distribucion, dos behaviors): sin CORS.
+- La entrega del frontend es un camino de deploy separado de la imagen: s3 sync (manual), no release/promote.
+- El cuello de botella de cada up es CloudFront (8-9 min de ~13).
+- Los headers de la app no deben reutilizar nombres que inyecta el CDN (X-Cache, Via, Age...).
+- El guardrail de promote (ASG en 0) evito un deploy que habria apagado la instancia en uso.
+- Creditos al inicio de la sesion del 10-10: 99.19 USD (expiran 2026-10-21).
+
+## No probado
+- Cache HIT a traves de CloudFront (stack de cache apagado en estas pruebas).
+- Concurrencia real de dos POST simultaneos (el FOR UPDATE se razono, no se ejecuto en paralelo).
+- Instance Refresh sin downtime (MinHealthyPercentage 100 / MaxHealthyPercentage 200): propuesto, no ejecutado.
+- Invalidacion de CloudFront: no hizo falta (index/app/styles con Cache-Control no-cache y distribucion nueva en cada up).
