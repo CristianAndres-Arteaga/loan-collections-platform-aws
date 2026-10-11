@@ -43,7 +43,7 @@ def listar_cuotas(response: Response, overdue: bool = False, db: Session = Depen
 
     cached = cache_get(key)
     if cached is not None:
-        response.headers["X-Cache"] = "HIT"
+        response.headers["X-App-Cache"] = "HIT"
         return _installment_list.validate_json(cached)
 
     stmt = select(Installment).where(
@@ -52,7 +52,7 @@ def listar_cuotas(response: Response, overdue: bool = False, db: Session = Depen
     )
     cuotas = _installment_list.validate_python(db.scalars(stmt).all(), from_attributes=True)
     cache_set(key, _installment_list.dump_json(cuotas), settings.cache_ttl_seconds)
-    response.headers["X-Cache"] = "MISS"
+    response.headers["X-App-Cache"] = "MISS"
     return cuotas
 
 

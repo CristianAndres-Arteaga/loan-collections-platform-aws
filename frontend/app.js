@@ -28,7 +28,7 @@ async function fetchInstallments(overdue) {
   }
   const res = await fetch(`${API}/installments/?overdue=${overdue}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return { rows: await res.json(), cache: res.headers.get("X-Cache") }; // X-Cache solo con overdue=true (ADR-0011)
+  return { rows: await res.json(), cache: res.headers.get("X-App-Cache") }; // X-App-Cache solo con overdue=true (ADR-0011)
 }
 
 async function loadInstallments() {
@@ -44,7 +44,7 @@ async function loadInstallments() {
       const badge = $("cache-badge");
       badge.textContent = `Caché ${cache}`;
       badge.className = `pill ${cache === "HIT" ? "ok" : "warn"}`;
-      badge.title = "Header X-Cache de la API (ElastiCache, cache-aside)";
+      badge.title = "Header X-App-Cache de la API (ElastiCache, cache-aside)";
       badge.hidden = false;
     }
     $("list-status").textContent = overdue ? "Cuotas vencidas sin pagar" : "Todas las cuotas";
