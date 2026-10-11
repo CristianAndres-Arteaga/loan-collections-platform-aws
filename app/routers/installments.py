@@ -62,9 +62,20 @@ def listar_cuotas(response: Response, overdue: bool = False, db: Session = Depen
     status_code=status.HTTP_201_CREATED,
 )
 def registrar_pago(installment_id: int, payload: PaymentCreate, db: Session = Depends(get_db)):
-    installment = db.get(Installment, installment_id)
+    # FOR UPDATE: bloquea la fila de la cuota hasta el commit; dos pagos
+    # concurrentes sobre la misma cuota se serializan (sin carrera en el saldo).
+    installment = db.get(Installment, installment_id, with_for_update=True)
     if installment is None:
         raise HTTPException(status_code=404, detail="Cuota no encontrada")
+    if installment.status == "paid":
+        raise HTTPException(status_code=409, detail="La cuota ya está pagada")
+
+    pagado_previo = db.scalar(
+        select(func.coalesce(func.sum(Payment.amount_paid), 0)).where(Payment.installment_id == installment_id)
+    )
+    saldo = installment.amount_due - pagado_previo
+    if payload.amount_paid > saldo:
+        raise HTTPException(status_code=409, detail=f"El monto excede el saldo pendiente ({saldo})")
 
     payment = Payment(installment_id=installment_id, **payload.model_dump())
     db.add(payment)
@@ -85,6 +96,6 @@ def registrar_pago(installment_id: int, payload: PaymentCreate, db: Session = De
     db.refresh(payment)
     logger.info(
         "pago registrado: payment_id=%s installment_id=%s status=%s",
-        payment.id, installment_id, installment.status,
+        payment.payment_id, installment_id, installment.status,
     )
     return payment
