@@ -2,7 +2,7 @@
 -- Datos minimos de prueba para desarrollo local
 
 INSERT INTO users (username, full_name, email, role)
-VALUES ('jperez', 'Juan Perez', 'jperez@test.com', 'loan_officer');
+VALUES ('jperez', 'Juan Perez', 'jperez@example.com', 'loan_officer');
 
 INSERT INTO clients (first_name, last_name, document_type, document_number)
 VALUES ('Ana', 'Gomez', 'DNI', '12345678');
