@@ -1,32 +1,20 @@
-# Environment & secrets
+# Secrets y configuración local
 .env
 .env.*
 !.env.example
 *.pem
 *.key
 
-# AWS
-.aws-sam/
-samconfig.toml
-
-# Docker
-*.log
-
-# Node (si aplica al backend)
-node_modules/
-dist/
-build/
-
-# OS
-*.deb
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-venv/
-
 # Python
+venv/
 __pycache__/
 *.pyc
+
+# Logs
+*.log
+
+# IDE y sistema operativo
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
