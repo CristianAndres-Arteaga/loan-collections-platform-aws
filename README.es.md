@@ -37,45 +37,9 @@ Todas las cifras salen de pruebas reales sobre la infraestructura desplegada. La
 
 ## Arquitectura
 
-```mermaid
-flowchart LR
-    user(["Usuario<br/>navegador"])
+![Diagrama de arquitectura: CloudFront, S3, ALB, EC2 Auto Scaling, RDS y ElastiCache en una VPC con 2 AZs](docs/diagram/architecture.png)
 
-    subgraph edge["Edge (global)"]
-        cf["CloudFront<br/>HTTPS + filtro de IP<br/>(CloudFront Function)"]
-    end
-
-    s3[("S3 privado<br/>frontend estático<br/>acceso solo vía OAC")]
-
-    subgraph vpc["VPC 10.0.0.0/16 · us-east-2 · 2 AZs"]
-        subgraph pub["Subnets públicas"]
-            alb["Application<br/>Load Balancer"]
-        end
-        subgraph app["Subnets privadas de app"]
-            asg["Auto Scaling Group<br/>EC2 t3.micro<br/>Docker + FastAPI"]
-            vpce["VPC Endpoints<br/>ECR · SSM · Logs · S3"]
-        end
-        subgraph data["Subnets privadas de datos"]
-            rds[("RDS PostgreSQL 16<br/>cifrado · PITR<br/>Multi-AZ opcional")]
-            cache[("ElastiCache Valkey<br/>cache-aside · TLS")]
-        end
-    end
-
-    ecr["ECR<br/>imágenes escaneadas"]
-    cw["CloudWatch Logs<br/>+ alarmas → SNS email"]
-    gha["GitHub Actions<br/>OIDC, sin claves"]
-
-    user -->|HTTPS| cf
-    cf -->|"/* (OAC)"| s3
-    cf -->|"/api/* + header secreto"| alb
-    alb -->|":8080"| asg
-    asg --> rds
-    asg -.->|fail-open| cache
-    asg --> vpce
-    vpce --> ecr
-    vpce --> cw
-    gha -->|"build, scan, push"| ecr
-```
+<sub>Diagrama generado como código desde [`docs/diagram/architecture.py`](docs/diagram/architecture.py) con los íconos oficiales de AWS.</sub>
 
 **Flujo de una petición:** el navegador entra a una única URL de CloudFront. La función de CloudFront filtra por IP. El behavior `*` sirve la UI desde un bucket S3 **privado** mediante OAC, y `/api/*` va al ALB con un header secreto que el listener valida. El Security Group del ALB solo admite la *prefix list* de CloudFront. Las instancias EC2 están en subnets privadas **sin NAT Gateway**: bajan la imagen de ECR y envían logs a través de VPC Endpoints. RDS y ElastiCache solo aceptan tráfico desde el Security Group de la app.
 
@@ -197,4 +161,4 @@ Proyecto **terminado** (octubre de 2026). Toda la infraestructura se dio de baja
 
 ---
 
-**Autor:** Cristian Andrés Rueda Arteaga · [GitHub](https://github.com/CristianAndres-Arteaga)
+**Autor:** Cristian Andrés Rueda Arteaga · [GitHub](https://github.com/CristianAndres-Arteaga) · Licencia [MIT](LICENSE)

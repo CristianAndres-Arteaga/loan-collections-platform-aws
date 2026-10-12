@@ -39,45 +39,9 @@ Every figure comes from real tests against the deployed infrastructure. Full out
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    user(["User<br/>browser"])
+![Architecture diagram: CloudFront, S3, ALB, EC2 Auto Scaling, RDS, ElastiCache inside a VPC across 2 AZs](docs/diagram/architecture.png)
 
-    subgraph edge["Edge (global)"]
-        cf["CloudFront<br/>HTTPS + IP filter<br/>(CloudFront Function)"]
-    end
-
-    s3[("Private S3<br/>static frontend<br/>OAC access only")]
-
-    subgraph vpc["VPC 10.0.0.0/16 · us-east-2 · 2 AZs"]
-        subgraph pub["Public subnets"]
-            alb["Application<br/>Load Balancer"]
-        end
-        subgraph app["Private app subnets"]
-            asg["Auto Scaling Group<br/>EC2 t3.micro<br/>Docker + FastAPI"]
-            vpce["VPC Endpoints<br/>ECR · SSM · Logs · S3"]
-        end
-        subgraph data["Private data subnets"]
-            rds[("RDS PostgreSQL 16<br/>encrypted · PITR<br/>optional Multi-AZ")]
-            cache[("ElastiCache Valkey<br/>cache-aside · TLS")]
-        end
-    end
-
-    ecr["ECR<br/>scanned images"]
-    cw["CloudWatch Logs<br/>+ alarms → SNS email"]
-    gha["GitHub Actions<br/>OIDC, no keys"]
-
-    user -->|HTTPS| cf
-    cf -->|"/* (OAC)"| s3
-    cf -->|"/api/* + secret header"| alb
-    alb -->|":8080"| asg
-    asg --> rds
-    asg -.->|fail-open| cache
-    asg --> vpce
-    vpce --> ecr
-    vpce --> cw
-    gha -->|"build, scan, push"| ecr
-```
+<sub>Diagram generated as code from [`docs/diagram/architecture.py`](docs/diagram/architecture.py) with the official AWS icons.</sub>
 
 **Request flow:** the browser hits a single CloudFront URL. A CloudFront Function filters by IP. The `*` behavior serves the UI from a **private** S3 bucket through OAC, and `/api/*` goes to the ALB with a secret header that the listener validates. The ALB security group only allows CloudFront's *prefix list*. EC2 instances run in private subnets **without a NAT Gateway**: they pull the image from ECR and ship logs through VPC Endpoints. RDS and ElastiCache only accept traffic from the app security group.
 
@@ -199,4 +163,4 @@ Kept visible on purpose: I know the limits of this design and what the next step
 
 ---
 
-**Author:** Cristian Andrés Rueda Arteaga · [GitHub](https://github.com/CristianAndres-Arteaga)
+**Author:** Cristian Andrés Rueda Arteaga · [GitHub](https://github.com/CristianAndres-Arteaga) · Licensed under [MIT](LICENSE)
